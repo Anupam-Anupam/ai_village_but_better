@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # Main server container that dispatches tasks to agents
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+    depends_on:
+      - agent1
+
+  # Agent 1 container (GPT-4 agent)
+  agent1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+
+  # Agent 2 container (Claude agent) - placeholder for now
+  agent2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8002:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+
+  # Agent 3 container (Llama agent) - placeholder for now
+  agent3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8003:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+
+networks:
+  ai-village-network:
+    driver: bridge
