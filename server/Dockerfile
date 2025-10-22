@@ -1,18 +1,28 @@
 FROM python:3.10-slim-bullseye
 
-WORKDIR /app
+# Set working directory
+WORKDIR /app/server
 
-# Copy and install dependencies
-COPY server/requirements.txt .
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the agent's source code into the container
-COPY docker/agent.py .
-COPY .env .
+# Copy application code
+COPY . .
 
-# Expose the port the agent will run on (as defined in router.py)
+# Set environment variables
+ENV PYTHONPATH=/app
+
+# Expose the port the agent will run on
 EXPOSE 8001
 
 # Command to run the agent server
-# --host 0.0.0.0 makes it accessible from outside the container
-CMD ["uvicorn", "agent:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "agent:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
