@@ -1,9 +1,4 @@
 fastapi
-uvicorn[standard]
-httpx
-pyautogui
-requests
+uvicorn
 openai
 python-dotenv
-sqlalchemy
-psycopg2-binary

@@ -19,12 +19,3 @@ langchain-core
 langchain-community
 langchain-openai
 langchain-core
-fastapi
-uvicorn[standard]
-httpx
-pyautogui
-requests
-openai
-python-dotenv
-sqlalchemy
-psycopg2-binary
