@@ -52,7 +52,9 @@ class AgentDatabase:
         
         # Extract database name from connection string
         # This ensures each agent connects to its own database
-        self.db_name = self.connection_string.split('/')[-1]
+        # Remove query parameters (like ?authSource=admin) from database name
+        db_part = self.connection_string.split('/')[-1]
+        self.db_name = db_part.split('?')[0]
         self.db = self.client[self.db_name]
         
         # Define collections for this agent's database
