@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Main hub database (MongoDB)
+  # Single MongoDB instance for everything
   mongodb:
     image: mongo:7.0
     environment:
@@ -14,23 +14,25 @@ services:
     networks:
       - ai-village-network
 
-  # Main server container that dispatches tasks to agents
+  # Main server container
   server:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: server/Dockerfile
     ports:
       - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MONGODB_URL=mongodb://admin:password@mongodb:27017/hubdb
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/serverdb?authSource=admin
     networks:
       - ai-village-network
     depends_on:
       - mongodb
       - agent1
+      - agent2
+      - agent3
 
-  # Agent 1 container (GPT-4 agent) - with embedded MongoDB
+  # Agent 1 - connects to shared MongoDB with different database name
   agent1:
     build:
       context: .
@@ -41,13 +43,13 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AGENT_ID=1
       - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://localhost:27017/agent1db
-    volumes:
-      - agent1_data:/data/db
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent1db?authSource=admin
     networks:
       - ai-village-network
+    depends_on:
+      - mongodb
 
-  # Agent 2 container (Claude agent) - with embedded MongoDB
+  # Agent 2 - connects to shared MongoDB with different database name
   agent2:
     build:
       context: .
@@ -58,13 +60,13 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AGENT_ID=2
       - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://localhost:27017/agent2db
-    volumes:
-      - agent2_data:/data/db
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent2db?authSource=admin
     networks:
       - ai-village-network
+    depends_on:
+      - mongodb
 
-  # Agent 3 container (Llama agent) - with embedded MongoDB
+  # Agent 3 - connects to shared MongoDB with different database name
   agent3:
     build:
       context: .
@@ -75,11 +77,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AGENT_ID=3
       - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://localhost:27017/agent3db
-    volumes:
-      - agent3_data:/data/db
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent3db?authSource=admin
     networks:
       - ai-village-network
+    depends_on:
+      - mongodb
 
 networks:
   ai-village-network:
@@ -87,6 +89,3 @@ networks:
 
 volumes:
   mongodb_data:
-  agent1_data:
-  agent2_data:
-  agent3_data:
