@@ -1,17 +1,16 @@
 version: '3.8'
 
 services:
-  # Database service
-  postgres:
-    image: ankane/pgvector
+  # Main hub database (MongoDB)
+  mongodb:
+    image: mongo:7.0
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: hubdb
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
     ports:
-      - "5432:5432"
+      - "27017:27017"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mongodb_data:/data/db
     networks:
       - ai-village-network
 
@@ -24,49 +23,61 @@ services:
       - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/hubdb
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/hubdb
     networks:
       - ai-village-network
     depends_on:
-      - postgres
+      - mongodb
       - agent1
 
-  # Agent 1 container (GPT-4 agent)
+  # Agent 1 container (GPT-4 agent) - with embedded MongoDB
   agent1:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: agents/agent1/Dockerfile
     ports:
       - "8001:8001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/hubdb
+      - AGENT_ID=1
+      - HUB_URL=http://server:8000
+      - MONGODB_URL=mongodb://localhost:27017/agent1db
+    volumes:
+      - agent1_data:/data/db
     networks:
       - ai-village-network
-    depends_on:
-      - postgres
 
-  # Agent 2 container (Claude agent) - placeholder for now
+  # Agent 2 container (Claude agent) - with embedded MongoDB
   agent2:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: agents/agent2/Dockerfile
     ports:
       - "8002:8001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENT_ID=2
+      - HUB_URL=http://server:8000
+      - MONGODB_URL=mongodb://localhost:27017/agent2db
+    volumes:
+      - agent2_data:/data/db
     networks:
       - ai-village-network
 
-  # Agent 3 container (Llama agent) - placeholder for now
+  # Agent 3 container (Llama agent) - with embedded MongoDB
   agent3:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: agents/agent3/Dockerfile
     ports:
       - "8003:8001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENT_ID=3
+      - HUB_URL=http://server:8000
+      - MONGODB_URL=mongodb://localhost:27017/agent3db
+    volumes:
+      - agent3_data:/data/db
     networks:
       - ai-village-network
 
@@ -75,4 +86,7 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
+  mongodb_data:
+  agent1_data:
+  agent2_data:
+  agent3_data:
