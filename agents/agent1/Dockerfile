@@ -1,3 +1,7 @@
+# Simple Agent 1 Dockerfile - No embedded MongoDB
+# ===============================================
+# This agent connects to the shared MongoDB instance
+
 FROM python:3.10-slim-bullseye
 
 # Set working directory
@@ -9,21 +13,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker cache
-COPY docker/requirements.txt .
+# Copy shared requirements
+COPY agents/shared/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the server directory contents
-COPY server/ .
+# Copy shared database models
+COPY agents/shared/ ./shared/
+
+# Copy agent-specific files
+COPY agents/agent1/agent.py .
 COPY .env .
 
 # Set environment variables
 ENV PYTHONPATH=/app
+ENV AGENT_ID=1
 
-# Expose the port the agent will run on
+# Expose port
 EXPOSE 8001
 
-# Command to run the agent server
-CMD ["uvicorn", "agent:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+# Run the agent (no MongoDB startup needed)
+CMD ["uvicorn", "agent:app", "--host", "0.0.0.0", "--port", "8001"]
