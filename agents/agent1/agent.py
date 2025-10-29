@@ -26,15 +26,11 @@ import os
 import sys
 from fastapi import FastAPI, Request, HTTPException
 from openai import OpenAI
-from dotenv import load_dotenv
 
 # Add shared directory to path for database models
 sys.path.append('/app/shared')
 
 from shared.models import AgentDatabase
-
-# Load environment variables
-load_dotenv()
 
 # --- CONFIGURATION ---
 # Get OpenAI API key from environment
@@ -113,7 +109,7 @@ async def execute_task(req: Request):
             model="gpt-4-turbo-preview",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": input_text}
+                {"role": "user", "content": input_text} #this is a comment
             ]
         )
         

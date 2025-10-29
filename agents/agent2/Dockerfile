@@ -24,7 +24,6 @@ COPY agents/shared/ ./shared/
 
 # Copy agent-specific files
 COPY agents/agent2/agent.py .
-COPY .env .
 
 # Set environment variables
 ENV PYTHONPATH=/app
