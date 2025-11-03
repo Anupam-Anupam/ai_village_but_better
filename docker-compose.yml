@@ -1,5 +1,19 @@
 
 services:
+  # Hub PostgreSQL database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_PASSWORD: hubpassword
+      POSTGRES_DB: hub
+    ports:
+      - "5433:5432"  # Changed to 5433 to avoid conflict with local PostgreSQL
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai-village-network
+
   # Single MongoDB instance for everything
   mongodb:
     image: mongo:7.0
@@ -12,6 +26,26 @@ services:
       - mongodb_data:/data/db
     networks:
       - ai-village-network
+
+  # MinIO object storage for screenshots and binary files
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"  # MinIO API
+      - "9001:9001"  # MinIO Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - ai-village-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
   # Main server container
   server:
@@ -88,3 +122,5 @@ networks:
 
 volumes:
   mongodb_data:
+  postgres_data:
+  minio_data:

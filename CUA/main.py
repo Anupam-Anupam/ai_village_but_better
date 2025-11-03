@@ -12,6 +12,14 @@ from agent import ComputerAgent
 # Import utility functions
 from utils import load_dotenv_files, handle_sigint
 
+# Import storage integration (optional)
+try:
+    from storage_integration import execute_task_with_storage, initialize_storage_adapters
+    STORAGE_INTEGRATION_AVAILABLE = True
+except ImportError:
+    STORAGE_INTEGRATION_AVAILABLE = False
+    print("Note: Storage integration not available (storage adapters not found)")
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -68,35 +76,84 @@ async def run_agent_example():
               "how tall is the empire state building?"
           ]
 
+        # Initialize storage adapters if available
+        storage_adapters = None
+        agent_id = os.getenv("AGENT_ID", "cua_agent")
+        
+        if STORAGE_INTEGRATION_AVAILABLE:
+            storage_adapters = initialize_storage_adapters(agent_id=agent_id)
+            if any(storage_adapters.values()):
+                print(f"\n✓ Storage integration enabled (agent_id: {agent_id})")
+                if storage_adapters["mongo"]:
+                    print("  - MongoDB logging: enabled")
+                if storage_adapters["pg"]:
+                    print("  - PostgreSQL task tracking: enabled")
+                if storage_adapters["minio"]:
+                    print("  - MinIO screenshot storage: enabled")
+            else:
+                print("\n⚠ Storage adapters not configured (set MONGODB_URL, POSTGRES_URL, MINIO_ENDPOINT)")
+                storage_adapters = None
+        else:
+            print("\n⚠ Storage integration not available")
+        
         # Use message-based conversation history
         history = []
         
         for i, task in enumerate(tasks):
             print(f"\nExecuting task {i+1}/{len(tasks)}: {task}")
             
-            # Add user message to history
-            history.append({"role": "user", "content": task})
-            
-            # Run agent with conversation history
-            async for result in agent.run(history, stream=False):
-                # Add agent outputs to history
-                history += result.get("output", [])
+            # Execute with storage integration if available
+            if storage_adapters and any(storage_adapters.values()):
+                try:
+                    result = await execute_task_with_storage(
+                        task_text=task,
+                        agent=agent,
+                        history=history,
+                        mongo_adapter=storage_adapters["mongo"],
+                        pg_adapter=storage_adapters["pg"],
+                        minio_adapter=storage_adapters["minio"],
+                        agent_id=agent_id
+                    )
+                    
+                    # Update history from result
+                    history = result.get("history", history)
+                    
+                    print(f"✅ Task {i+1}/{len(tasks)} completed: {task}")
+                    if result.get("task_id"):
+                        print(f"  Task ID: {result.get('task_id')}")
+                    print(f"  Logs written: {result.get('logs_written', 0)}")
+                    print(f"  Screenshots uploaded: {result.get('screenshots_uploaded', 0)}")
+                    print(f"  Progress updates: {result.get('progress_updates', 0)}")
+                    
+                except Exception as e:
+                    logger.error(f"Error executing task with storage: {e}")
+                    traceback.print_exc()
+                    raise
+            else:
+                # Fallback to original execution without storage
+                # Add user message to history
+                history.append({"role": "user", "content": task})
                 
-                # Print output for debugging
-                for item in result.get("output", []):
-                    if item.get("type") == "message":
-                        content = item.get("content", [])
-                        for content_part in content:
-                            if content_part.get("text"):
-                                print(f"Agent: {content_part.get('text')}")
-                    elif item.get("type") == "computer_call":
-                        action = item.get("action", {})
-                        action_type = action.get("type", "")
-                        print(f"Computer Action: {action_type}({action})")
-                    elif item.get("type") == "computer_call_output":
-                        print("Computer Output: [Screenshot/Result]")
-                        
-            print(f"✅ Task {i+1}/{len(tasks)} completed: {task}")
+                # Run agent with conversation history
+                async for result in agent.run(history, stream=False):
+                    # Add agent outputs to history
+                    history += result.get("output", [])
+                    
+                    # Print output for debugging
+                    for item in result.get("output", []):
+                        if item.get("type") == "message":
+                            content = item.get("content", [])
+                            for content_part in content:
+                                if content_part.get("text"):
+                                    print(f"Agent: {content_part.get('text')}")
+                        elif item.get("type") == "computer_call":
+                            action = item.get("action", {})
+                            action_type = action.get("type", "")
+                            print(f"Computer Action: {action_type}({action})")
+                        elif item.get("type") == "computer_call_output":
+                            print("Computer Output: [Screenshot/Result]")
+                            
+                print(f"✅ Task {i+1}/{len(tasks)} completed: {task}")
 
     except Exception as e:
         logger.error(f"Error in run_agent_example: {e}")
