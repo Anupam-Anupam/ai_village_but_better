@@ -16,8 +16,15 @@ import os
 app = FastAPI()
 
 # MongoDB connection for server database
-mongo_client = MongoClient(os.getenv("MONGODB_URL", "mongodb://admin:password@mongodb:27017/serverdb?authSource=admin"))
-server_db = mongo_client.serverdb
+try:
+    mongo_client = MongoClient("mongodb://admin:password@mongodb:27017/serverdb?authSource=admin", serverSelectionTimeoutMS=5000)
+    mongo_client.server_info()  # Force a connection test
+    server_db = mongo_client.serverdb
+    print("✅ Successfully connected to MongoDB")
+except Exception as e:
+    print(f"❌ Failed to connect to MongoDB: {e}")
+    print("Make sure MongoDB service is running and accessible at mongodb:27017")
+    server_db = None
 
 # Agent URLs
 AGENT_URLS = {

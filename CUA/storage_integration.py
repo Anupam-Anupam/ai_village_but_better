@@ -301,51 +301,28 @@ def initialize_storage_adapters(agent_id: str = "cua_agent") -> Dict[str, Any]:
     try:
         mongo_url = os.getenv("MONGODB_URL")
         if mongo_url:
-            # Test connection first
-            from pymongo import MongoClient
-            test_client = MongoClient(mongo_url, serverSelectionTimeoutMS=2000)
-            test_client.admin.command('ping')
-            test_client.close()
             adapters["mongo"] = MongoAdapter(agent_id=agent_id, connection_string=mongo_url)
         else:
             adapters["mongo"] = None
     except Exception as e:
         print(f"Warning: Failed to initialize MongoDB adapter: {e}")
-        print(f"  Make sure MongoDB is running: docker-compose up -d mongodb")
         adapters["mongo"] = None
     
     # PostgreSQL adapter
     try:
         pg_url = os.getenv("POSTGRES_URL")
         if pg_url:
-            # Test connection first
-            from sqlalchemy import create_engine, text
-            test_engine = create_engine(pg_url, connect_args={"connect_timeout": 2})
-            with test_engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            test_engine.dispose()
             adapters["pg"] = PostgresAdapter(connection_string=pg_url)
         else:
             adapters["pg"] = None
     except Exception as e:
         print(f"Warning: Failed to initialize PostgreSQL adapter: {e}")
-        print(f"  Make sure PostgreSQL is running: docker-compose up -d postgres")
         adapters["pg"] = None
     
     # MinIO adapter (requires PostgreSQL for metadata)
     try:
         minio_endpoint = os.getenv("MINIO_ENDPOINT")
         if minio_endpoint and adapters["pg"]:
-            # Test MinIO connection
-            from minio import Minio
-            from minio.error import S3Error
-            test_client = Minio(
-                minio_endpoint,
-                access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-                secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-                secure=False  # Use HTTP for local
-            )
-            test_client.list_buckets()  # Test connection
             adapters["minio"] = MinIOAdapter(
                 agent_id=agent_id,
                 postgres_adapter=adapters["pg"],
@@ -355,7 +332,6 @@ def initialize_storage_adapters(agent_id: str = "cua_agent") -> Dict[str, Any]:
             adapters["minio"] = None
     except Exception as e:
         print(f"Warning: Failed to initialize MinIO adapter: {e}")
-        print(f"  Make sure MinIO is running: docker-compose up -d minio")
         adapters["minio"] = None
     
     return adapters
