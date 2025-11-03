@@ -418,17 +418,3 @@ All tests should pass with ✓ marks.
 
 
 ==========================================================================
-
-#Set environment variables
-$env:POSTGRES_URL = "postgresql://hub:hubpassword@localhost:5433/hub"
-$env:MONGODB_URL = "mongodb://admin:password@localhost:27017/cua_agentdb?authSource=admin"
-$env:MINIO_ENDPOINT = "localhost:9000"
-$env:MINIO_ACCESS_KEY = "minioadmin"
-$env:MINIO_SECRET_KEY = "minioadmin"
-$env:AGENT_ID = "cua_agent"
-$env:CUA_API_KEY = "sk_cua-api01_576b1dd77727365c2cfa058e10c0a2a105c48fb83f56c04f98deb4c464b35129"
-$env:CUA_SANDBOX_NAME = "m-linux-aqnzbmas97"
-$env:OPENAI_API_KEY = "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"
-
-#Run the full test
-python test_cua_full_storage.py
