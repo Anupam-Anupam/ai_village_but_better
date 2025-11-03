@@ -12,19 +12,8 @@ from fastapi import FastAPI, Request
 from pymongo import MongoClient
 from datetime import datetime
 import os
-from .middleware.request_logger import log_requests
-from .db import init_db
 
 app = FastAPI()
-
-# Initialize database tables
-init_db()
-
-# Add request logging middleware
-@app.middleware("http")
-async def log_requests_middleware(request: Request, call_next):
-    async with log_requests(request, call_next) as response:
-        return response
 
 # MongoDB connection for server database
 mongo_client = MongoClient(os.getenv("MONGODB_URL", "mongodb://admin:password@mongodb:27017/serverdb?authSource=admin"))
