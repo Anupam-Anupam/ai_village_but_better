@@ -32,6 +32,7 @@ except ImportError as e:
 # Test configuration
 AGENT_ID = os.getenv("AGENT_ID", "cua_agent")
 TASK_TEXT = os.getenv("CUA_TEST_TASK", "Create a file named test_cua.txt with content 'Hello from CUA agent test'")
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:password@localhost:27017/agent1db?authSource=admin")
 
 
 class CUAStorageTest:
@@ -50,7 +51,7 @@ class CUAStorageTest:
         # Initialize storage adapters
         print("\n[1/6] Initializing storage adapters...")
         try:
-            self.mongo = MongoAdapter(agent_id=AGENT_ID)
+            self.mongo = MongoAdapter(agent_id=AGENT_ID, connection_string=MONGODB_URL)
             self.pg = PostgresAdapter()
             self.minio = MinIOAdapter(agent_id=AGENT_ID, postgres_adapter=self.pg)
             print("✓ Storage adapters initialized")
@@ -298,4 +299,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
