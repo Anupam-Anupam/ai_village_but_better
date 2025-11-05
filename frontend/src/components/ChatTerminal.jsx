@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 
+// Try to detect the API port dynamically, fallback to 8001
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001';
+
 const ChatTerminal = () => {
   const [messages, setMessages] = useState([
     { 
@@ -10,9 +13,10 @@ const ChatTerminal = () => {
   ]);
   
   const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-
+  const seenResponsesRef = useRef(new Set());
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -22,25 +26,72 @@ const ChatTerminal = () => {
     scrollToBottom();
   }, [messages]);
 
-  const handleSubmit = (e) => {
+  // Poll for agent responses
+  useEffect(() => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/agent-responses`);
+        const data = await response.json();
+        
+        // Check for new responses from all agents
+        Object.entries(data.responses || {}).forEach(([agentId, agentResponses]) => {
+          agentResponses.forEach((resp) => {
+            const responseKey = `${agentId}-${resp.file}-${resp.timestamp}`;
+            if (!seenResponsesRef.current.has(responseKey)) {
+              seenResponsesRef.current.add(responseKey);
+              
+              // Add agent response to messages
+              const agentMessage = {
+                id: Date.now() + Math.random(),
+                text: `[${agentId}] ${resp.text}`,
+                sender: 'agent',
+                timestamp: new Date(resp.timestamp * 1000),
+                agentId: agentId
+              };
+              
+              setMessages(prev => {
+                // Check if this message already exists
+                const exists = prev.some(msg => 
+                  msg.sender === 'agent' && 
+                  msg.text === agentMessage.text &&
+                  msg.agentId === agentId
+                );
+                if (exists) return prev;
+                return [...prev, agentMessage];
+              });
+            }
+          });
+        });
+      } catch (error) {
+        console.error('Error polling agent responses:', error);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval);
+  }, []);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || isLoading) return;
+
+    const taskText = inputValue.trim();
 
     // Add user message
     const userMessage = {
       id: Date.now(),
-      text: inputValue,
+      text: taskText,
       sender: 'user',
       timestamp: new Date()
     };
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
+    setIsLoading(true);
 
-    // Simulate agent thinking
+    // Add thinking message
     const thinkingMessage = {
       id: Date.now() + 0.5,
-      text: '...',
+      text: 'Sending task to agents...',
       sender: 'agent',
       timestamp: new Date(),
       isThinking: true
@@ -48,28 +99,49 @@ const ChatTerminal = () => {
     
     setMessages(prev => [...prev, thinkingMessage]);
 
-    // Simulate agent response after delay
-    setTimeout(() => {
-      const responses = [
-        'I understand you want to generate an image. Could you provide more details about the style and composition?',
-        'That sounds interesting! What kind of mood or atmosphere are you envisioning?',
-        'I can help with that. Any specific colors, lighting, or artistic influences you want to include?',
-        'Great choice! I\'ll generate a few variations based on your description.',
-        'I can create that for you. Would you like to adjust any details before I proceed?'
-      ];
-      
+    try {
+      // Send task to server (which writes to tasks.txt)
+      const response = await fetch(`${API_BASE}/task`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ task: taskText }),
+      });
+
+      const data = await response.json();
+
+      // Remove thinking message
+      setMessages(prev => prev.filter(msg => !msg.isThinking));
+
+      if (response.ok) {
+        // Add confirmation message
+        const confirmationMessage = {
+          id: Date.now() + 1,
+          text: 'Task sent to agents. Waiting for responses...',
+          sender: 'agent',
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMessage]);
+      } else {
+        throw new Error(data.detail || 'Failed to send task');
+      }
+    } catch (error) {
       // Remove thinking message
       setMessages(prev => prev.filter(msg => !msg.isThinking));
       
-      const agentMessage = {
+      // Add error message
+      const errorMessage = {
         id: Date.now() + 1,
-        text: responses[Math.floor(Math.random() * responses.length)],
+        text: `Error: ${error.message}`,
         sender: 'agent',
-        timestamp: new Date()
+        timestamp: new Date(),
+        isError: true
       };
-      
-      setMessages(prev => [...prev, agentMessage]);
-    }, 1500 + Math.random() * 1000);
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const formatTime = (date) => {
@@ -77,37 +149,71 @@ const ChatTerminal = () => {
   };
 
   return (
-    <div className="chat-terminal">
-      <div className="terminal-header">
-        <div className="terminal-buttons">
-          <span className="close-btn"></span>
-          <span className="minimize-btn"></span>
-          <span className="expand-btn"></span>
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100%',
+      backgroundColor: 'rgba(10, 25, 47, 0.8)',
+      borderRadius: '12px',
+      border: '1px solid rgba(100, 255, 218, 0.2)',
+      overflow: 'hidden',
+      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
+    }}>
+      <div style={{
+        padding: '15px 20px',
+        backgroundColor: 'rgba(10, 25, 47, 0.9)',
+        borderBottom: '1px solid rgba(100, 255, 218, 0.2)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between'
+      }}>
+        <div style={{ color: '#64ffda', fontWeight: 'bold', fontSize: '1.1rem' }}>
+          AI Village Task Runner
         </div>
-        <div className="terminal-title">AI Image Assistant</div>
       </div>
       
-      <div className="messages">
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '15px'
+      }}>
         {messages.map((message) => (
           <div 
             key={message.id} 
-            className={`message ${message.sender} ${message.isThinking ? 'thinking' : ''}`}
+            style={{
+              padding: '12px 16px',
+              borderRadius: '8px',
+              backgroundColor: message.sender === 'user' 
+                ? 'rgba(30, 144, 255, 0.1)' 
+                : 'rgba(100, 255, 218, 0.1)',
+              borderLeft: `3px solid ${message.sender === 'user' ? '#1e90ff' : '#64ffda'}`,
+              color: message.sender === 'user' ? '#1e90ff' : '#64ffda'
+            }}
           >
-            <div className="message-header">
-              <span className="sender">
+            <div style={{ 
+              fontSize: '0.85rem', 
+              marginBottom: '8px',
+              opacity: 0.8,
+              display: 'flex',
+              justifyContent: 'space-between'
+            }}>
+              <span style={{ fontWeight: 'bold' }}>
                 {message.sender === 'user' ? 'You' : 'AI Assistant'}
               </span>
-              <span className="timestamp">
-                {!message.isThinking && formatTime(message.timestamp)}
-              </span>
+              {!message.isThinking && (
+                <span>{formatTime(message.timestamp)}</span>
+              )}
             </div>
-            <div className="message-content">
+            <div style={{ fontSize: '0.95rem', wordBreak: 'break-word' }}>
               {message.text}
               {message.isThinking && (
-                <span className="typing-indicator">
-                  <span></span>
-                  <span></span>
-                  <span></span>
+                <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
+                  <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
+                  <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
+                  <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
                 </span>
               )}
             </div>
@@ -116,27 +222,60 @@ const ChatTerminal = () => {
         <div ref={messagesEndRef} />
       </div>
       
-      <form onSubmit={handleSubmit} className="chat-input-container">
-        <div className="input-wrapper">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Describe the image you want to generate..."
-            autoFocus
-          />
-          <button 
-            type="submit" 
-            className="send-button"
-            disabled={!inputValue.trim()}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-        </div>
+      <form onSubmit={handleSubmit} style={{
+        padding: '15px',
+        backgroundColor: 'rgba(10, 25, 47, 0.9)',
+        borderTop: '1px solid rgba(100, 255, 218, 0.2)',
+        display: 'flex',
+        gap: '10px'
+      }}>
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          placeholder="Enter a task for the CUA agents..."
+          disabled={isLoading}
+          autoFocus
+          style={{
+            flex: 1,
+            padding: '12px 15px',
+            backgroundColor: 'rgba(10, 25, 47, 0.8)',
+            border: '1px solid rgba(100, 255, 218, 0.2)',
+            borderRadius: '8px',
+            color: '#ccd6f6',
+            fontSize: '0.95rem',
+            outline: 'none'
+          }}
+        />
+        <button 
+          type="submit" 
+          disabled={!inputValue.trim() || isLoading}
+          style={{
+            padding: '12px 20px',
+            backgroundColor: isLoading ? '#444' : '#64ffda',
+            color: '#0a192f',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: isLoading || !inputValue.trim() ? 'not-allowed' : 'pointer',
+            fontWeight: 'bold',
+            fontSize: '0.95rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
       </form>
+      <style>{`
+        @keyframes blink {
+          0%, 100% { opacity: 0; }
+          50% { opacity: 1; }
+        }
+      `}</style>
     </div>
   );
 };

@@ -10,9 +10,10 @@ export default defineConfig({
   root: __dirname,
   base: '/',
   server: {
-    port: 3000,
+    // Use a non-conflicting port and allow fallback if busy
+    port: 5173,
     open: true,
-    strictPort: true,
+    strictPort: false,
     host: true
   },
   build: {

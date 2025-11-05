@@ -1,48 +1,37 @@
-import { useState, useEffect } from 'react';
 import ChatTerminal from './components/ChatTerminal';
-import ImageCards from './components/ImageCards';
 import './App.css';
 
 function App() {
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
-  
-  useEffect(() => {
-    const handleMouseMove = (e) => {
-      setMousePosition({ x: e.clientX, y: e.clientY });
-    };
-    
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
-
   return (
-    <div className="app">
-      {/* Animated background gradient */}
-      <div 
-        className="background-gradient"
-        style={{
-          '--mouse-x': `${mousePosition.x}px`,
-          '--mouse-y': `${mousePosition.y}px`,
-        }}
-      >
-        <div className="gradient-1"></div>
-        <div className="gradient-2"></div>
-        <div className="gradient-3"></div>
-      </div>
-      
-      <div className="app-container">
-        <main className="main-content">
-          <div className="content-wrapper">
-            <h1>AI Image Generator</h1>
-            <div className="image-section">
-              <ImageCards />
-            </div>
-          </div>
-        </main>
-        
-        <aside className="chat-sidebar">
+    <div style={{ 
+      minHeight: '100vh', 
+      width: '100%',
+      display: 'flex', 
+      flexDirection: 'column',
+      backgroundColor: '#0a192f',
+      color: '#ccd6f6',
+      padding: '20px',
+      boxSizing: 'border-box'
+    }}>
+      <div style={{ 
+        maxWidth: '1200px', 
+        width: '100%', 
+        margin: '0 auto', 
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column'
+      }}>
+        <h1 style={{ 
+          marginBottom: '20px', 
+          color: '#64ffda',
+          fontSize: '2rem',
+          fontWeight: 'bold'
+        }}>
+          AI Village Task Runner
+        </h1>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <ChatTerminal />
-        </aside>
+        </div>
       </div>
     </div>
   );

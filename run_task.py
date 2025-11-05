@@ -2,6 +2,10 @@
 """
 Simple script to send a task to CUA agents and run them.
 Takes user input, sends it to the chat server, and starts all three agents.
+
+Can run as:
+1. CLI script: python run_task.py [task]
+2. API server: python run_task.py --api
 """
 
 import subprocess
@@ -12,6 +16,9 @@ import json
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Add CUA directory to path for storage integration
 sys.path.insert(0, str(Path(__file__).parent / "CUA"))
@@ -29,6 +36,12 @@ except ImportError:
 CHAT_SERVER_URL = os.getenv("CHAT_SERVER_URL", "http://localhost:8000")
 AGENT_IDS = ["agent1-cua", "agent2-cua", "agent3-cua"]
 PROJECT_ROOT = Path(__file__).parent
+
+# Global state for API mode
+_running_processes: Dict[str, subprocess.Popen] = {}
+_seen_responses: Dict[str, Set[Path]] = {agent_id: set() for agent_id in AGENT_IDS}
+_stop_monitoring = threading.Event()
+_monitor_threads: List[threading.Thread] = []
 
 
 # Import traj-sorter functions
@@ -154,6 +167,43 @@ def monitor_agent_responses(agent_id: str, seen_files: Set[Path], stop_event: th
             time.sleep(2)
 
 
+def get_agent_responses() -> Dict[str, List[Dict]]:
+    """Get all agent responses from trajectory folders (for API)."""
+    responses = {}
+    
+    for agent_id in AGENT_IDS:
+        latest_folder = get_latest_trajectory_folder(agent_id)
+        if not latest_folder:
+            responses[agent_id] = []
+            continue
+        
+        # Collect all agent response JSON files
+        json_files = list(latest_folder.rglob("*.json"))
+        agent_responses = []
+        
+        for json_file in json_files:
+            try:
+                with json_file.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                
+                if is_agent_response(json_file.name, data):
+                    response_text = extract_agent_response_text(data)
+                    if response_text:
+                        agent_responses.append({
+                            "text": response_text,
+                            "file": str(json_file.relative_to(PROJECT_ROOT)),
+                            "timestamp": json_file.stat().st_mtime
+                        })
+            except Exception:
+                continue
+        
+        # Sort by timestamp (newest first)
+        agent_responses.sort(key=lambda x: x["timestamp"], reverse=True)
+        responses[agent_id] = agent_responses
+    
+    return responses
+
+
 def write_task_to_file(task_content: str):
     """Write task to the shared tasks file."""
     tasks_file = PROJECT_ROOT / "tasks.txt"
@@ -188,8 +238,8 @@ def start_agent(agent_id: str) -> subprocess.Popen:
             [sys.executable, str(main_py)],
             cwd=str(agent_dir),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # avoid PIPE buffer blocking
+            stderr=subprocess.DEVNULL,
         )
         print(f"   ✅ {agent_id} started (PID: {proc.pid})")
         return proc
@@ -309,6 +359,183 @@ def main():
         print("\n✅ All agents stopped. Exiting.")
 
 
+# API Models
+class TaskRequest(BaseModel):
+    task: str
+
+
+# FastAPI app setup
+api_app = FastAPI(title="AI Village Task Runner API")
+
+# Add CORS middleware
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@api_app.post("/task")
+async def create_task(request: TaskRequest):
+    """Create a task by writing to tasks.txt and optionally starting agents."""
+    task_content = request.task.strip()
+    
+    if not task_content:
+        raise HTTPException(status_code=400, detail="No task provided")
+    
+    # Store task in database
+    task_id = None
+    if STORAGE_AVAILABLE and store_task:
+        task_id = store_task(task_content, agent_id="task_runner")
+    
+    # Write task to file
+    try:
+        write_task_to_file(task_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write task: {str(e)}")
+    
+    # Start agents if not already running
+    started_agents = []
+    for agent_id in AGENT_IDS:
+        if agent_id not in _running_processes or _running_processes[agent_id].poll() is not None:
+            proc = start_agent(agent_id)
+            if proc:
+                _running_processes[agent_id] = proc
+                started_agents.append(agent_id)
+    
+    # Start monitoring if not already started
+    if not _monitor_threads:
+        for agent_id in AGENT_IDS:
+            thread = threading.Thread(
+                target=monitor_agent_responses,
+                args=(agent_id, _seen_responses[agent_id], _stop_monitoring),
+                daemon=True
+            )
+            thread.start()
+            _monitor_threads.append(thread)
+    
+    return {
+        "success": True,
+        "task": task_content,
+        "task_id": task_id,
+        "started_agents": started_agents,
+        "message": "Task written to tasks.txt. Agents will pick it up on their next poll."
+    }
+
+
+@api_app.get("/agent-responses")
+async def get_responses():
+    """Get latest agent responses from trajectory folders."""
+    return {"responses": get_agent_responses()}
+
+
+@api_app.get("/agents/status")
+async def get_agents_status():
+    """Get status of running agents."""
+    status = {}
+    for agent_id in AGENT_IDS:
+        if agent_id in _running_processes:
+            proc = _running_processes[agent_id]
+            is_running = proc.poll() is None
+            status[agent_id] = {
+                "running": is_running,
+                "pid": proc.pid if is_running else None,
+            }
+        else:
+            status[agent_id] = {
+                "running": False,
+                "pid": None,
+            }
+    return {"agents": status}
+
+
+@api_app.post("/agents/start")
+async def start_all_agents():
+    """Manually start all agents."""
+    started = []
+    for agent_id in AGENT_IDS:
+        if agent_id not in _running_processes or _running_processes[agent_id].poll() is not None:
+            proc = start_agent(agent_id)
+            if proc:
+                _running_processes[agent_id] = proc
+                started.append(agent_id)
+    
+    # Start monitoring if not already started
+    if not _monitor_threads:
+        for agent_id in AGENT_IDS:
+            thread = threading.Thread(
+                target=monitor_agent_responses,
+                args=(agent_id, _seen_responses[agent_id], _stop_monitoring),
+                daemon=True
+            )
+            thread.start()
+            _monitor_threads.append(thread)
+    
+    return {"started": started, "message": f"Started {len(started)} agent(s)"}
+
+
+@api_app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
+@api_app.get("/")
+async def root():
+    """Root endpoint to avoid 404 and show basic API info."""
+    return {
+        "name": "AI Village Task Runner API",
+        "status": "ok",
+        "endpoints": [
+            {"method": "POST", "path": "/task", "desc": "Create a task and start agents if needed"},
+            {"method": "GET", "path": "/agent-responses", "desc": "Get latest agent responses"},
+            {"method": "GET", "path": "/agents/status", "desc": "Get running agents status"},
+            {"method": "POST", "path": "/agents/start", "desc": "Start all agents"},
+            {"method": "GET", "path": "/health", "desc": "Health check"},
+        ]
+    }
+
+
+@api_app.get("/favicon.ico")
+async def favicon():
+    """Placeholder to prevent 404 noise for browsers requesting favicon."""
+    from fastapi import Response
+    return Response(content=b"", media_type="image/x-icon")
+
+
 if __name__ == "__main__":
-    main()
+    # Check if running in API mode
+    if "--api" in sys.argv or os.getenv("RUN_TASK_API", "").lower() == "true":
+        import uvicorn
+        import socket
+        
+        # Find an available port starting from 8001
+        def find_free_port(start_port=8001):
+            for port in range(start_port, start_port + 10):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.bind(('', port))
+                        return port
+                except OSError:
+                    continue
+            return start_port  # Fallback to start_port if all are busy
+        
+        port = int(os.getenv("RUN_TASK_PORT", "0"))
+        if port == 0:
+            port = find_free_port()
+        
+        print(f"🚀 Starting run_task.py API server on port {port}")
+        print(f"   Endpoints:")
+        print(f"   - POST /task - Create a task")
+        print(f"   - GET /agent-responses - Get agent responses")
+        print(f"   - GET /agents/status - Get agent status")
+        print(f"   - POST /agents/start - Start all agents")
+        print(f"   - GET /health - Health check")
+        print(f"   - Frontend should connect to: http://localhost:{port}")
+        uvicorn.run(api_app, host="0.0.0.0", port=port)
+    else:
+        # Run as CLI script
+        main()
 
