@@ -415,6 +415,3 @@ After running all tests, you should see:
 3. **MinIO**: Screenshot files in `screenshots/agent1/` bucket
 
 All tests should pass with ✓ marks.
-
-
-==========================================================================
