@@ -168,3 +168,216 @@ Once you've got this example running, try:
 - Contributing to the open-source community
 
 Happy automating, feel free to leave us a star if you liked this! 🚀
+
+Project Overview
+
+You are an expert full-stack engineer tasked with building the frontend for a multi-agent AI orchestration platform.
+The backend (FastAPI, Python) is mostly complete, but not yet attached. You must ensure that the frontend is structured to integrate seamlessly once backend endpoints are finalized.
+
+The backend manages:
+
+Multiple containerized CUA-like agents running on Linux VMs
+
+Agents send logs, progress, and screenshots to MongoDB, PostgreSQL, and MinIO
+
+An Evaluator Agent produces graphs, performance metrics, and task overviews
+
+A Hub coordinates user requests and agent tasks
+
+You will now create a React + Vite + Tailwind + shadcn/ui frontend, inspired by AI Village and LMArena, focusing on simplicity, modularity, and future extensibility.
+
+Functional Goals
+
+UI/UX Goals
+
+A live dashboard displaying:
+
+Active agents and their task progress
+
+Performance metrics from the Evaluator Agent (via graphs)
+
+Real-time logs and task completion status
+
+A Chat Interface where users can issue tasks or questions to agents.
+
+A Leaderboard View (for multi-agent competition scenarios).
+
+A Screenshot Viewer that displays the latest screenshots pulled from MinIO (via backend API).
+
+Backend Integration (Future-Proofing)
+
+The backend API endpoints are not yet attached.
+
+You must index and inspect the backend codebase (search for route definitions, e.g., @app.get, @app.post, etc.) to identify how data will be fetched.
+
+Create placeholder API calls and configuration in /src/api/ that can be easily bound later.
+
+Ensure CORS and socket endpoints are anticipated for minimal refactoring later.
+
+Tech Stack
+
+Frontend Framework: React 19 + Vite
+
+Styling: Tailwind CSS + shadcn/ui
+
+State Management: Zustand
+
+Charts: Recharts
+
+Communication: Fetch + WebSocket (for future live updates)
+
+Build Tool: Vite
+
+Deployment: Docker-ready static build
+
+Folder Structure (Required)
+frontend/
+├── src/
+│   ├── components/
+│   │   ├── ChatBox.jsx
+│   │   ├── Leaderboard.jsx
+│   │   ├── AgentCard.jsx
+│   │   ├── ScoreGraph.jsx
+│   │   ├── ScreenshotViewer.jsx
+│   │   └── TaskFeed.jsx
+│   ├── pages/
+│   │   ├── Dashboard.jsx
+│   │   └── Chat.jsx
+│   ├── api/
+│   │   ├── config.js          // Base URLs (backend endpoints placeholder)
+│   │   ├── hubAPI.js          // Placeholder: fetch user requests and agent states
+│   │   ├── evaluatorAPI.js    // Placeholder: fetch performance graphs
+│   │   ├── agentAPI.js        // Placeholder: agent task logs and updates
+│   ├── store/
+│   │   └── useAgentStore.js   // Zustand global store
+│   ├── App.jsx
+│   ├── main.jsx
+│   └── index.css
+├── public/
+│   └── favicon.ico
+├── vite.config.js
+└── Dockerfile
+
+Implementation Requirements
+
+1. Initialize the Project
+
+Scaffold a Vite React project (npm create vite@latest frontend --template react).
+
+Configure Tailwind and shadcn/ui.
+
+Create minimal example components with placeholder data.
+
+2. Inspect the Backend Codebase
+
+Search for FastAPI route definitions (@app.get, @app.post, etc.).
+
+Identify all existing endpoints that serve:
+
+Agent logs
+
+Evaluator metrics
+
+User task submissions
+
+MinIO media access
+
+For each, define corresponding placeholder API handlers in /src/api/ that mock realistic data.
+
+3. Build Reusable Components
+
+AgentCard → Displays agent name, task progress, and health.
+
+TaskFeed → Scrollable log of agent updates.
+
+ScoreGraph → Uses Recharts to plot Evaluator Agent scores over time.
+
+Leaderboard → Table view ranking agents by performance (if multiple agents exist).
+
+ChatBox → Input/output interface for user-to-agent interaction (mock backend response for now).
+
+ScreenshotViewer → Displays screenshots from a mocked MinIO URL list.
+
+4. Global State (Zustand)
+
+Store and manage:
+
+Agents list
+
+Active tasks
+
+Evaluator metrics
+
+Chat messages
+
+Mock initial state and demonstrate UI updates.
+
+5. Styling and Layout
+
+Use Tailwind and shadcn/ui components.
+
+Create a responsive layout:
+
++------------------------------------------------+
+| Sidebar (Agents) |    Dashboard / Chat Area    |
++------------------------------------------------+
+| Graphs / Logs / Screenshots                    |
++------------------------------------------------+
+
+
+Dark theme default.
+
+6. Documentation
+
+Include README.md explaining:
+
+Project structure
+
+How to connect backend later
+
+Where to update API endpoints
+
+7. Dockerfile
+
+Multi-stage Dockerfile to build and serve the React app with Nginx or Vite preview.
+
+Important Constraints
+
+Do not execute terminal commands directly; only show them in comments.
+
+Use mock APIs but organize the code as if it were connected.
+
+Keep all code minimal and modular — focus on scalability and readability.
+
+The Cursor agent must index the backend folder before scaffolding to ensure seamless data shape compatibility (e.g., JSON schemas, routes, field names).
+
+Deliverables
+
+Fully scaffolded frontend codebase
+
+Placeholder API integration ready to connect to FastAPI backend
+
+Minimal Dockerfile
+
+README explaining setup
+
+Example dashboard populated with mock data
+
+Example Next Step (Once Backend Ready)
+
+When backend endpoints (FastAPI) are stable:
+
+Replace mock API URLs in /src/api/config.js
+
+Swap mock fetches with real axios or fetch calls
+
+Add WebSocket integration for real-time updates
+
+Final Note for Cursor Agent:
+Before writing any code:
+
+Index and inspect the backend directory.
+
+Identify key endpoints (URLs, payload structure).
+
+Then scaffold the frontend with mock API data that mirrors backend payloads.
