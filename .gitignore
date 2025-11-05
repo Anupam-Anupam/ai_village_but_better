@@ -36,3 +36,5 @@ Thumbs.db
 trajectories/
 organized_traj/
 
+node_modules
+src
