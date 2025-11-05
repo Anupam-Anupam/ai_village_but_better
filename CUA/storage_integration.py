@@ -20,15 +20,19 @@ try:
     STORAGE_AVAILABLE = True
 except ImportError:
     STORAGE_AVAILABLE = False
+    # Create dummy types for type hints when storage is not available
+    MongoAdapter = None  # type: ignore
+    PostgresAdapter = None  # type: ignore
+    MinIOAdapter = None  # type: ignore
 
 
 async def execute_task_with_storage(
     task_text: str,
     agent,
     history: List[Dict[str, Any]],
-    mongo_adapter: Optional[MongoAdapter] = None,
-    pg_adapter: Optional[PostgresAdapter] = None,
-    minio_adapter: Optional[MinIOAdapter] = None,
+    mongo_adapter: Optional[Any] = None,
+    pg_adapter: Optional[Any] = None,
+    minio_adapter: Optional[Any] = None,
     agent_id: str = "cua_agent"
 ) -> Dict[str, Any]:
     """
@@ -335,4 +339,54 @@ def initialize_storage_adapters(agent_id: str = "cua_agent") -> Dict[str, Any]:
         adapters["minio"] = None
     
     return adapters
+
+
+def store_task(task_content: str, agent_id: str = "task_runner") -> Optional[int]:
+    """
+    Store a task from run_task.py into the database.
+    
+    Args:
+        task_content: The task description/prompt
+        agent_id: Agent identifier (default: "task_runner")
+        
+    Returns:
+        Task ID if successful, None otherwise
+    """
+    if not STORAGE_AVAILABLE:
+        return None
+    
+    try:
+        # Initialize storage adapters
+        adapters = initialize_storage_adapters(agent_id=agent_id)
+        pg_adapter = adapters.get("pg")
+        mongo_adapter = adapters.get("mongo")
+        
+        if not pg_adapter:
+            return None
+        
+        # Create task in PostgreSQL
+        task_id = pg_adapter.create_task(
+            agent_id=agent_id,
+            title=f"Task: {task_content[:50]}...",
+            description=task_content,
+            status="pending",
+            metadata={"source": "run_task.py", "task_type": "cua_execution"}
+        )
+        
+        # Log to MongoDB if available
+        if mongo_adapter:
+            try:
+                mongo_adapter.write_log(
+                    level="info",
+                    message=f"Task created from run_task.py: {task_content}",
+                    task_id=str(task_id),
+                    metadata={"agent_id": agent_id, "task_text": task_content, "source": "run_task.py"}
+                )
+            except Exception as e:
+                print(f"Warning: Failed to log to MongoDB: {e}")
+        
+        return task_id
+    except Exception as e:
+        print(f"Warning: Failed to store task in database: {e}")
+        return None
 
