@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from datetime import datetime
 import os
+from typing import Optional
 
 app = FastAPI()
 
@@ -93,6 +94,9 @@ AGENT_URLS = {
     "agent3": "http://agent3:8001/execute"
 }
 
+# Run task API URL (the canonical source for agent responses)
+RUN_TASK_API = os.getenv("RUN_TASK_API", "http://localhost:8001")
+
 @app.post("/message")
 async def send_message(request: Request):
     """Send message to all agents and store in databases"""
@@ -145,31 +149,25 @@ async def get_messages():
 
 @app.get("/agent-responses")
 async def get_agent_responses():
-    """Get all agent responses from the database"""
-    responses = {}
-    # Get messages from each agent's database
-    for agent_name in AGENT_URLS.keys():
-        try:
-            agent_db = mongo_client[f"{agent_name}db"]
-            agent_responses = list(agent_db.responses.find().sort("timestamp", -1).limit(10))
-            
-            # Convert ObjectId to string and format timestamps
-            formatted_responses = []
-            for resp in agent_responses:
-                resp["_id"] = str(resp["_id"])
-                resp["timestamp"] = resp.get("timestamp", datetime.now()).timestamp()
-                formatted_responses.append({
-                    "text": resp.get("response", "No response"),
-                    "file": resp.get("file", "unknown"),
-                    "timestamp": resp["timestamp"]
-                })
-            
-            responses[agent_name] = formatted_responses
-        except Exception as e:
-            print(f"Error getting responses for {agent_name}: {e}")
-            responses[agent_name] = []
+    """Proxy to run_task.py API for agent responses.
     
-    return {"responses": responses}
+    This endpoint proxies to the canonical source (run_task.py on port 8001)
+    which reads directly from trajectory folders.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{RUN_TASK_API}/agent-responses")
+            response.raise_for_status()
+            return response.json()
+    except httpx.RequestError as e:
+        print(f"Error proxying to run_task API: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to reach run_task API at {RUN_TASK_API}. Make sure run_task.py is running with --api flag."
+        )
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error from run_task API: {e}")
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
 @app.post("/task")
 async def create_task(request: Request):
@@ -276,15 +274,40 @@ async def create_task(request: Request):
 @app.get("/agent-screenshot/{agent_id}")
 async def get_agent_screenshot(agent_id: str):
     """
-    Get the latest screenshot for an agent from MinIO
+    Get the latest screenshot for an agent.
+    
+    First tries to proxy to run_task.py (filesystem), then falls back to MinIO if configured.
     """
+    # First, try to get from run_task.py (filesystem)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{RUN_TASK_API}/agent-screenshot/{agent_id}",
+                follow_redirects=True
+            )
+            if response.status_code == 200:
+                # Stream the response back
+                return StreamingResponse(
+                    response.iter_bytes(),
+                    media_type="image/png",
+                    headers={
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache",
+                        "Expires": "0"
+                    }
+                )
+    except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        print(f"run_task API unavailable or screenshot not found: {e}")
+        # Fall through to MinIO fallback
+    
+    # Fallback: Try MinIO (if configured)
     response = None
     try:
         # Try different possible paths in MinIO
         possible_paths = [
-            f"{agent_id}/screenshots/latest.png",  # agent1/screenshots/latest.png
-            f"{agent_id}/latest.png",              # agent1/latest.png
-            f"screenshots/{agent_id}/latest.png"    # screenshots/agent1/latest.png
+            f"{agent_id}/screenshots/latest.png",  # agent1-cua/screenshots/latest.png
+            f"{agent_id}/latest.png",              # agent1-cua/latest.png
+            f"screenshots/{agent_id}/latest.png"    # screenshots/agent1-cua/latest.png
         ]
         
         for object_path in possible_paths:
@@ -305,14 +328,17 @@ async def get_agent_screenshot(agent_id: str):
                 
             except S3Error as e:
                 if e.code == "NoSuchKey":
-                    print(f"Path not found: {object_path}")
+                    print(f"MinIO path not found: {object_path}")
                     continue
                 print(f"MinIO error: {e}")
                 raise
                 
         # If we get here, none of the paths worked
-        print(f"Screenshot not found for {agent_id}. Tried paths: {possible_paths}")
-        raise HTTPException(status_code=404, detail=f"Screenshot not found for {agent_id}")
+        print(f"Screenshot not found for {agent_id} in MinIO. Tried paths: {possible_paths}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Screenshot not found for {agent_id}. Checked filesystem (via run_task API) and MinIO."
+        )
         
     except Exception as e:
         print(f"Error getting screenshot: {e}")
