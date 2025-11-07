@@ -113,7 +113,7 @@ class PostgresAdapter:
         else:
             self.connection_string = os.getenv(
                 "POSTGRES_URL",
-                "postgresql://hub:hubpassword@localhost:5433/hub"  # Using port 5433 to avoid local PostgreSQL conflict
+                "postgresql://hub:hubpassword@postgres:5432/hub"  # Using service name 'postgres' and default port 5432
             )
         
         self.engine = create_engine(self.connection_string)
