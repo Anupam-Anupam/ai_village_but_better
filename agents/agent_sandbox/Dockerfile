@@ -9,6 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Playwright runtime dependencies
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libatspi2.0-0 xvfb libxkbcommon0 \
     libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+    # Additional dependencies for Playwright
+    libnss3-dev libxss1 libasound2 libxtst6 libgtk-3-0 libgtk-4-1 \
+    libnotify-dev libgconf-2-4 libdbus-1-3 libxss1 libatk1.0-0 libatk-bridge2.0-0 \
+    libx11-xcb1 libxcb-dri3-0 libdrm2 libgbm1 libxshmfence1 \
     && useradd --create-home --shell /bin/bash agent1 \
     && mkdir -p /home/agent1/workdir /app \
     && chown -R agent1:agent1 /home/agent1 /app \
@@ -21,8 +25,9 @@ COPY agents/agent_sandbox/requirements.txt /app/requirements.txt
 RUN python3 -m pip install --upgrade pip setuptools wheel && \
     pip3 install --no-cache-dir -r /app/requirements.txt
 
-# Install Playwright browsers as root (before switching to non-root user)
-RUN python3 -m playwright install --with-deps
+# Install Playwright and browsers as root
+RUN python3 -m playwright install --with-deps chromium && \
+    python3 -m playwright install-deps
 
 # Copy application code and set ownership to non-root user
 COPY agents/agent_sandbox/app /app/app
