@@ -12,46 +12,50 @@ const ScreenshotViewer = () => {
   const fetchScreenshots = async () => {
     try {
       setIsLoading(true);
+      // Use the server's /screenshots/list endpoint
+      console.log('Fetching screenshots...');
+      const response = await fetch('http://localhost:8000/screenshots/list');
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Failed to fetch screenshots:', errorText);
+        throw new Error(`Failed to fetch screenshots: ${response.status} ${response.statusText}`);
+      }
+      const data = await response.json();
+      console.log('Received screenshot data:', data);
+      
+      // Update screenshots with new URLs and timestamps
       const updatedScreenshots = { ...screenshots };
+      let hasUpdates = false;
       
-      // Agent configuration
-      const agents = ['agent1', 'agent2', 'agent3'];
-      
-      for (const agent of agents) {
-        try {
-          // Use the server's screenshot endpoint with cache-busting
-          const response = await fetch(`http://localhost:8000/agent-screenshot/${agent}?t=${Date.now()}`, {
-            method: 'GET',
-            headers: {
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Pragma': 'no-cache',
-              'Expires': '0'
-            },
-            credentials: 'include'  // Include cookies if needed for auth
-          });
+      for (const agent of ['agent1', 'agent2', 'agent3']) {
+        if (data[agent] && data[agent].url) {
+          // Ensure the URL is accessible from the browser
+          let publicUrl = data[agent].url;
           
-          if (response.ok) {
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
+          // Replace internal Docker hostnames with localhost if needed
+          publicUrl = publicUrl.replace('http://minio:9000', 'http://localhost:9000');
+          
+          // Add timestamp to force image refresh
+          const timestamp = new Date().getTime();
+          const imageUrl = `${publicUrl}${publicUrl.includes('?') ? '&' : '?'}_t=${timestamp}`;
+          
+          console.log(`Updating ${agent} screenshot URL:`, imageUrl);
+          
+          // Only update if the URL has changed to avoid unnecessary re-renders
+          if (updatedScreenshots[agent].url !== imageUrl) {
             updatedScreenshots[agent] = {
-              url: url,
-              timestamp: new Date().toISOString()
+              url: imageUrl,
+              timestamp: data[agent].lastModified
             };
-          } else {
-            console.warn(`Failed to fetch screenshot from ${agent}:`, response.status);
-            updatedScreenshots[agent] = {
-              url: '',
-              timestamp: new Date().toISOString(),
-              error: `Failed to load: ${response.status} ${response.statusText}`
-            };
+            hasUpdates = true;
           }
-        } catch (err) {
-          console.error(`Error fetching from ${agent}:`, err);
-          updatedScreenshots[agent] = {
-            ...updatedScreenshots[agent],
-            error: `Connection error: ${err.message}`
-          };
+        } else {
+          console.log(`No screenshot data for ${agent}`);
         }
+      }
+      
+      if (hasUpdates) {
+        setScreenshots(updatedScreenshots);
       }
       
       setScreenshots(updatedScreenshots);
@@ -85,95 +89,31 @@ const ScreenshotViewer = () => {
       {error && <div style={styles.error}>{error}</div>}
       
       <div style={styles.grid}>
-        {['agent1', 'agent2', 'agent3'].map((agent) => {
-          const agentData = screenshots[agent] || {};
-          const hasError = !!agentData.error;
-          const hasImage = !!agentData.url;
-          
-          return (
-            <div key={agent} style={styles.card}>
-              <h3 style={styles.agentName}>
-                {agent}
-                {hasError && (
-                  <span style={{ 
-                    fontSize: '0.7em',
-                    color: '#ff6b6b',
-                    marginLeft: '10px',
-                    fontWeight: 'normal'
-                  }}>
-                    {agentData.error}
-                  </span>
-                )}
-              </h3>
-              <div style={styles.imageContainer}>
-                {hasImage ? (
-                  <img
-                    src={`${agentData.url}?t=${new Date().getTime()}`}
-                    alt={`${agent} screenshot`}
-                    style={{
-                      ...styles.image,
-                      border: hasError ? '2px solid #ff6b6b' : 'none'
-                    }}
-                    onError={(e) => {
-                      e.target.onerror = null;
-                      e.target.src = 'data:image/svg+xml;charset=UTF-8,%3Csvg width=\'400\' height=\'300\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Crect width=\'100%25\' height=\'100%25\' fill=\'%23112d4e\'/%3E%3Ctext x=\'50%25\' y=\'50%25\' font-family=\'sans-serif\' font-size=\'16\' text-anchor=\'middle\' dominant-baseline=\'middle\' fill=\'%2364ffda\'%3EImage load failed%3C/text%3E%3C/svg%3E';
-                      
-                      // Update state to reflect the error
-                      setScreenshots(prev => ({
-                        ...prev,
-                        [agent]: {
-                          ...prev[agent],
-                          error: 'Failed to load image'
-                        }
-                      }));
-                    }}
-                  />
-                ) : (
-                  <div style={styles.placeholder}>
-                    {isLoading ? (
-                      <span>Loading...</span>
-                    ) : hasError ? (
-                      <span style={{ color: '#ff6b6b' }}>Error loading image</span>
-                    ) : (
-                      'No screenshot available'
-                    )}
-                  </div>
-                )}
-              </div>
-              <div style={styles.timestamp}>
-                {agentData.timestamp ? `Last updated: ${formatTime(agentData.timestamp)}` : 'Never updated'}
-                {hasImage && (
-                  <button 
-                    onClick={() => {
-                      // Force refresh this agent's screenshot
-                      const timestamp = new Date().getTime();
-                      setScreenshots(prev => ({
-                        ...prev,
-                        [agent]: {
-                          ...prev[agent],
-                          url: `${prev[agent].url.split('?')[0]}?t=${timestamp}`,
-                          timestamp: new Date().toISOString()
-                        }
-                      }));
-                    }}
-                    style={{
-                      marginLeft: '10px',
-                      background: 'transparent',
-                      border: '1px solid #64ffda',
-                      color: '#64ffda',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                      fontSize: '0.7em',
-                      padding: '2px 5px'
-                    }}
-                  >
-                    Refresh
-                  </button>
-                )}
-              </div>
+        {['agent1', 'agent2', 'agent3'].map((agent) => (
+          <div key={agent} style={styles.card}>
+            <h3 style={styles.agentName}>{agent}</h3>
+            <div style={styles.imageContainer}>
+              {screenshots[agent].url ? (
+                <img
+                  src={screenshots[agent].url}
+                  alt={`${agent} screenshot`}
+                  style={styles.image}
+                  onError={(e) => {
+                    e.target.onerror = null;
+                    e.target.src = 'data:image/svg+xml;charset=UTF-8,%3Csvg width=\'400\' height=\'300\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Crect width=\'100%25\' height=\'100%25\' fill=\'%23112d4e\'/%3E%3Ctext x=\'50%25\' y=\'50%25\' font-family=\'sans-serif\' font-size=\'16\' text-anchor=\'middle\' dominant-baseline=\'middle\' fill=\'%2364ffda\'%3ENo image available%3C/text%3E%3C/svg%3E';
+                  }}
+                />
+              ) : (
+                <div style={styles.placeholder}>
+                  {isLoading ? 'Loading...' : 'No screenshot available'}
+                </div>
+              )}
             </div>
-          );
-        })}
+            <div style={styles.timestamp}>
+              Last updated: {formatTime(screenshots[agent].timestamp)}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

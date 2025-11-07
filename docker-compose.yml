@@ -86,20 +86,10 @@ services:
       - AGENT_ID=1
       - HUB_URL=http://server:8000
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent1db?authSource=admin
-      # MinIO Configuration
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
-      - MINIO_BUCKET=screenshots
-      - SCREENSHOT_PATH=/app/screenshots
-    volumes:
-      - ./screenshots/agent1:/app/screenshots
     networks:
       - ai-village-network
     depends_on:
       - mongodb
-      - minio
 
   # Agent 2 - connects to shared MongoDB with different database name
   agent2:
@@ -113,20 +103,10 @@ services:
       - AGENT_ID=2
       - HUB_URL=http://server:8000
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent2db?authSource=admin
-      # MinIO Configuration
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
-      - MINIO_BUCKET=screenshots
-      - SCREENSHOT_PATH=/app/screenshots
-    volumes:
-      - ./screenshots/agent2:/app/screenshots
     networks:
       - ai-village-network
     depends_on:
       - mongodb
-      - minio
 
   # Agent 3 - connects to shared MongoDB with different database name
   agent3:
@@ -140,20 +120,10 @@ services:
       - AGENT_ID=3
       - HUB_URL=http://server:8000
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent3db?authSource=admin
-      # MinIO Configuration
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
-      - MINIO_BUCKET=screenshots
-      - SCREENSHOT_PATH=/app/screenshots
-    volumes:
-      - ./screenshots/agent3:/app/screenshots
     networks:
       - ai-village-network
     depends_on:
       - mongodb
-      - minio
 
 networks:
   ai-village-network:
