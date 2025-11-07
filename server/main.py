@@ -1,34 +1,41 @@
 """
-Simple AI Village Server
-========================
-Accepts terminal input and sends messages to all agents.
-Stores messages in server database and each agent's database.
+AI Village Server
+=================
+Manages tasks and agent communication.
+Uses PostgreSQL for task management and MongoDB for logs.
 """
 
 import asyncio
-import httpx
 import json
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from minio import Minio
-from minio.error import S3Error
-import io
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from datetime import datetime
 import os
 from typing import Optional
+import sys
+from minio import Minio
+from minio.error import S3Error
+
+# Add parent directory to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from storage import PostgresAdapter
 
 app = FastAPI()
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173"],  # Your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize PostgreSQL
+pg = PostgresAdapter()
 
 # Initialize MinIO client
 minio_client = Minio(
@@ -39,58 +46,24 @@ minio_client = Minio(
 )
 BUCKET_NAME = "screenshots"
 
-# MongoDB connection for server database
-# MongoDB connection parameters
-MONGODB_HOST = os.getenv("MONGODB_HOST", "localhost")
-MONGODB_PORT = int(os.getenv("MONGODB_PORT", "27017"))
-MONGODB_USER = "admin"
-MONGODB_PASS = "password"
-MONGODB_DB = "serverdb"
-
-MONGODB_URL = f"mongodb://{MONGODB_USER}:{MONGODB_PASS}@{MONGODB_HOST}:{MONGODB_PORT}/{MONGODB_DB}?authSource=admin"
-
-print(f"🔌 Attempting to connect to MongoDB at {MONGODB_HOST}:{MONGODB_PORT}")
-
-# Initialize MongoDB client and database
-mongo_client = None
-server_db = None
-
+# MongoDB connection for logs
 try:
-    mongo_client = MongoClient(
-        MONGODB_URL,
-        serverSelectionTimeoutMS=5000,
-        connectTimeoutMS=10000,
-        socketTimeoutMS=10000
-    )
-    
-    # Test the connection
-    mongo_client.server_info()
-    print(f"✅ Successfully connected to MongoDB at {MONGODB_HOST}:{MONGODB_PORT}")
-    
-    # Get or create the database
-    server_db = mongo_client[MONGODB_DB]
-    
-    # Create collections if they don't exist
-    required_collections = ['messages', 'tasks', 'agent_responses']
-    existing_collections = server_db.list_collection_names()
-    
-    for collection in required_collections:
-        if collection not in existing_collections:
-            server_db.create_collection(collection)
-            print(f"✅ Created collection: {collection}")
-    
-    print("✅ Database initialization complete")
-    
+    # Use the service name from docker-compose
+    mongo_uri = "mongodb://admin:password@mongodb:27017/serverdb?authSource=admin"
+    mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    mongo_client.server_info()  # Force a connection test
+    server_db = mongo_client.serverdb
+    print("✅ Successfully connected to MongoDB")
+    print(f"Connection URL: {mongo_uri}")
 except Exception as e:
     print(f"❌ Failed to connect to MongoDB: {e}")
-    print(f"Make sure MongoDB service is running and accessible at {MONGODB_HOST}:{MONGODB_PORT}")
-    print(f"Connection URL: {MONGODB_URL}")
+    print("Make sure MongoDB service is running and accessible at mongodb:27017")
     server_db = None
 
-# Agent URLs - using container names for Docker networking
+# Agent URLs - using Docker service names
 AGENT_URLS = {
     "agent1": "http://agent1:8001/execute",
-    "agent2": "http://agent2:8001/execute",
+    "agent2": "http://agent2:8001/execute", 
     "agent3": "http://agent3:8001/execute"
 }
 
@@ -107,11 +80,12 @@ async def send_message(request: Request):
         return {"error": "No message provided"}
     
     # Store in server database
-    server_db.messages.insert_one({
-        "message": message,
-        "timestamp": datetime.now(),
-        "source": "server"
-    })
+    if server_db:
+        server_db.messages.insert_one({
+            "message": message,
+            "timestamp": datetime.now(),
+            "source": "server"
+        })
     
     # Send to all agents
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -141,6 +115,8 @@ async def send_message(request: Request):
 @app.get("/messages")
 async def get_messages():
     """Get all messages from server database"""
+    if not server_db:
+        return {"messages": []}
     messages = list(server_db.messages.find().sort("timestamp", -1).limit(10))
     for msg in messages:
         msg["_id"] = str(msg["_id"])
@@ -171,105 +147,69 @@ async def get_agent_responses():
 
 @app.post("/task")
 async def create_task(request: Request):
-    """Create a new task and send to all agents"""
+    """Create a new task and assign to agents"""
     try:
-        data = await request.json()
-        task_text = data.get("task", "")
+        # Log raw request body
+        body_bytes = await request.body()
+        print(f"Raw request body: {body_bytes}")
+        
+        # Try to parse JSON
+        try:
+            data = await request.json()
+            print(f"Parsed JSON data: {data}")  # Debug log
+        except json.JSONDecodeError as je:
+            print(f"Failed to parse JSON: {je}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(je)}")
+        
+        if not data or not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="Invalid request body")
+            
+        task_text = data.get("text", "") or data.get("task", "")
         
         if not task_text:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Task text is required"}
-            )
+            print(f"No task text found in data: {data}")  # Debug log
+            raise HTTPException(status_code=400, detail="Task text is required")
         
-        # Store task in database
-        task = {
-            "task": task_text,
-            "timestamp": datetime.now(),
-            "status": "pending"
-        }
+        # Create task in PostgreSQL
+        task_id = pg.create_task(
+            agent_id="frontend",
+            title=f"Task: {task_text[:50]}...",
+            description=task_text,
+            status="pending",
+            metadata={"type": "user_task"}
+        )
         
-        print(f"New task received: {task_text}")
-        
-        # Store in database
-        result = server_db.tasks.insert_one(task)
-        task["_id"] = str(result.inserted_id)
-        
-        # Forward task to all agents asynchronously
-        async def send_to_agent(agent_name, url):
+        # Log to MongoDB if available
+        if server_db is not None:
             try:
-                # Format the task as a shell command to echo the task text
-                command = f"echo 'Task received: {task_text}'"
-                
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        url,
-                        json={
-                            "type": "shell",
-                            "command": command
-                        },
-                        timeout=30.0
-                    )
-                    response.raise_for_status()
-                    response_data = response.json()
-                    
-                    # Store the agent's response in the database
-                    try:
-                        if mongo_client is not None:  # Check if MongoDB client is initialized
-                            response_doc = {
-                                "agent": agent_name,
-                                "task_id": str(result.inserted_id),
-                                "task": task_text,
-                                "response": response_data,
-                                "timestamp": datetime.now()
-                            }
-                            server_db.agent_responses.insert_one(response_doc)
-                    except Exception as db_error:
-                        print(f"Error storing response in database: {db_error}")
-                    
-                    return {"agent": agent_name, "status": "success", "response": response_data}
+                server_db.messages.insert_one({
+                    "task_id": task_id,
+                    "message": f"Created task: {task_text}",
+                    "timestamp": datetime.utcnow(),
+                    "level": "info"
+                })
             except Exception as e:
-                error_msg = f"Error sending to {agent_name} at {url}: {e}"
-                print(error_msg)
-                
-                # Store the error in the database
-                try:
-                    if mongo_client is not None:  # Check if MongoDB client is initialized
-                        error_doc = {
-                            "agent": agent_name,
-                            "task_id": str(result.inserted_id) if 'result' in locals() else None,
-                            "task": task_text,
-                            "error": str(e),
-                            "timestamp": datetime.now()
-                        }
-                        server_db.agent_responses.insert_one(error_doc)
-                except Exception as db_error:
-                    print(f"Error storing error in database: {db_error}")
-                
-                return {"agent": agent_name, "status": "error", "error": str(e)}
+                print(f"Warning: Failed to log to MongoDB: {str(e)}")
+            
+        # Notify agents
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tasks = [
+                client.post(url, json={
+                    "task_id": task_id,
+                    "input_text": task_text,
+                    "task_type": "user_task"
+                })
+                for url in AGENT_URLS.values()
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Send to all agents in parallel
-        tasks = [send_to_agent(name, url) for name, url in AGENT_URLS.items()]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return {"task_id": task_id, "status": "created"}
         
-        # Update task status
-        server_db.tasks.update_one(
-            {"_id": result.inserted_id},
-            {"$set": {"status": "sent_to_agents"}}
-        )
-        
-        return {
-            "message": "Task received and sent to all agents",
-            "task_id": str(result.inserted_id),
-            "agent_responses": results
-        }
-        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
     except Exception as e:
-        print(f"Error processing task: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Error processing task: {str(e)}"}
-        )
+        print(f"Error creating task: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/agent-screenshot/{agent_id}")
 async def get_agent_screenshot(agent_id: str):
@@ -350,6 +290,40 @@ async def get_agent_screenshot(agent_id: str):
         if response:
             response.close()
             response.release_conn()
+
+@app.get("/tasks")
+async def get_tasks(agent_id: str = None, status: str = None, limit: int = 10):
+    """Get tasks with optional filtering"""
+    tasks = pg.get_tasks(agent_id=agent_id, status=status, limit=limit)
+    return {"tasks": tasks}
+
+@app.get("/task/{task_id}")
+async def get_task(task_id: int):
+    """Get task details with progress"""
+    task = pg.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    progress = pg.get_task_progress(task_id)
+    task["progress"] = progress
+    return task
+
+@app.get("/logs")
+async def get_logs(limit: int = 100):
+    """Get recent logs from MongoDB"""
+    if not server_db:
+        return {"logs": [], "warning": "MongoDB not available"}
+        
+    logs = list(server_db.messages.find()
+               .sort("timestamp", -1)
+               .limit(limit))
+    
+    # Convert ObjectId to string and format datetime
+    for log in logs:
+        log["_id"] = str(log["_id"])
+        log["timestamp"] = log["timestamp"].isoformat()
+        
+    return {"logs": logs}
 
 if __name__ == "__main__":
     import uvicorn

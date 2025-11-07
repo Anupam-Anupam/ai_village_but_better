@@ -1,31 +1,9 @@
-import asyncio
-import os
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+import os
 from .executor import run_shell_command, browse_url, write_file, read_file, generate_file, render_file_screenshot
-from .screenshot_service import screenshot_loop
 
-# Background task for taking screenshots
-screenshot_task = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup: Start the screenshot service
-    global screenshot_task
-    screenshot_task = asyncio.create_task(screenshot_loop(30))  # Take a screenshot every 30 seconds
-    
-    yield
-    
-    # Shutdown: Cancel the screenshot task
-    if screenshot_task:
-        screenshot_task.cancel()
-        try:
-            await screenshot_task
-        except asyncio.CancelledError:
-            pass
-
-app = FastAPI(title="Agent Sandbox", version="0.1", lifespan=lifespan)
+app = FastAPI(title="Agent Sandbox", version="0.1")
 
 class ExecutePayload(BaseModel):
     type: str = "shell"   # "shell", "browse", "write", or "generate"

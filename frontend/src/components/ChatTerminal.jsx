@@ -26,72 +26,53 @@ const ChatTerminal = () => {
     scrollToBottom();
   }, [messages]);
 
-  // Poll for agent responses
+  // Poll for task updates
   useEffect(() => {
     const pollInterval = setInterval(async () => {
       try {
-        // Fetch agent responses from the server
-        const response = await fetch(`${API_BASE}/agent-responses`);
+        // Get recent tasks
+        const response = await fetch(`${API_BASE}/tasks?limit=5`);
         const data = await response.json();
         
-        // Check if we have responses in the expected format
-        if (data.responses && typeof data.responses === 'object') {
-          Object.entries(data.responses).forEach(([agentId, agentResponses]) => {
-            if (Array.isArray(agentResponses)) {
-              agentResponses.forEach((resp) => {
-                const responseKey = `${agentId}-${resp.timestamp}`;
-                
-                if (!seenResponsesRef.current.has(responseKey)) {
-                  seenResponsesRef.current.add(responseKey);
-                  
-                  // Extract response text from the agent's response
-                  let responseText = '';
-                  if (resp.response && resp.response.stdout) {
-                    // If we have stdout, use that as the response
-                    responseText = resp.response.stdout.trim();
-                  } else if (resp.response) {
-                    // Otherwise, try to stringify the response
-                    responseText = JSON.stringify(resp.response, null, 2);
-                  } else if (resp.text) {
-                    // Fallback to text field if available
-                    responseText = resp.text;
-                  } else {
-                    // If no response content, indicate that
-                    responseText = 'No response content';
-                  }
-                  
-                  // Create a message for the agent's response
-                  const agentMessage = {
-                    id: `${agentId}-${Date.now()}`,
-                    text: responseText,
-                    sender: 'agent',
-                    timestamp: new Date(resp.timestamp * 1000),
-                    agentId: agentId,
-                    isAgentResponse: true
-                  };
-                  
-                  setMessages(prev => {
-                    // Check if this message already exists
-                    const exists = prev.some(msg => 
-                      msg.id === agentMessage.id || 
-                      (msg.sender === 'agent' && 
-                       msg.text === agentMessage.text && 
-                       msg.agentId === agentId &&
-                       Math.abs(msg.timestamp - agentMessage.timestamp) < 1000)
-                    );
-                    
-                    if (exists) return prev;
-                    return [...prev, agentMessage];
-                  });
-                }
-              });
-            }
-          });
+        if (data.tasks && data.tasks.length > 0) {
+          // Process the most recent task
+          const latestTask = data.tasks[0];
+          
+          // Create a unique key for this task update
+          const taskKey = `task-${latestTask.id}-${latestTask.updated_at}`;
+          
+          if (!seenResponsesRef.current.has(taskKey)) {
+            seenResponsesRef.current.add(taskKey);
+            
+            // Add task update to messages
+            const taskMessage = {
+              id: `task-${latestTask.id}`,
+              text: `[Task ${latestTask.status}] ${latestTask.title}`,
+              sender: 'system',
+              timestamp: new Date(latestTask.updated_at),
+              taskId: latestTask.id
+            };
+            
+            setMessages(prev => {
+              // Check if this task update already exists
+              const exists = prev.some(msg => 
+                msg.id === taskMessage.id && 
+                msg.text === taskMessage.text
+              );
+              if (exists) return prev;
+              
+              // Replace previous message for this task if it exists
+              return [
+                ...prev.filter(msg => msg.id !== taskMessage.id),
+                taskMessage
+              ];
+            });
+          }
         }
       } catch (error) {
-        console.error('Error polling agent responses:', error);
+        console.error('Error polling task updates:', error);
       }
-    }, 2000); // Poll every 2 seconds
+    }, 3000); // Poll every 3 seconds
 
     return () => clearInterval(pollInterval);
   }, []);
@@ -126,13 +107,13 @@ const ChatTerminal = () => {
     setMessages(prev => [...prev, thinkingMessage]);
 
     try {
-      // Send task to server (which writes to tasks.txt)
+      // Create a new task via the API
       const response = await fetch(`${API_BASE}/task`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ task: taskText }),
+        body: JSON.stringify({ text: taskText }),
       });
 
       const data = await response.json();
@@ -141,16 +122,18 @@ const ChatTerminal = () => {
       setMessages(prev => prev.filter(msg => !msg.isThinking));
 
       if (response.ok) {
-        // Add confirmation message
-        const confirmationMessage = {
-          id: Date.now() + 1,
-          text: 'Task sent to agents. Waiting for responses...',
-          sender: 'agent',
-          timestamp: new Date()
+        // Add the task to the UI
+        const taskMessage = {
+          id: `task-${data.task_id}`,
+          text: `[Task created] ${taskText}`,
+          sender: 'system',
+          timestamp: new Date(),
+          taskId: data.task_id
         };
-        setMessages(prev => [...prev, confirmationMessage]);
+        
+        setMessages(prev => [...prev, taskMessage]);
       } else {
-        throw new Error(data.detail || 'Failed to send task');
+        throw new Error(data.detail || 'Failed to create task');
       }
     } catch (error) {
       // Remove thinking message
@@ -206,9 +189,9 @@ const ChatTerminal = () => {
         flexDirection: 'column',
         gap: '15px'
       }}>
-        {messages.map((message, index) => (
+        {messages.map((message) => (
           <div 
-            key={`${message.id}-${index}`} 
+            key={message.id} 
             style={{
               padding: '12px 16px',
               borderRadius: '8px',
@@ -224,45 +207,16 @@ const ChatTerminal = () => {
               marginBottom: '8px',
               opacity: 0.8,
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
+              justifyContent: 'space-between'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ 
-                  fontWeight: 'bold',
-                  color: message.sender === 'user' ? '#1e90ff' : '#64ffda'
-                }}>
-                  {message.sender === 'user' ? 'You' : `Agent ${message.agentId || 'Assistant'}`}
-                </span>
-                {message.agentId && (
-                  <span style={{
-                    fontSize: '0.7rem',
-                    backgroundColor: 'rgba(100, 255, 218, 0.2)',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    color: '#64ffda'
-                  }}>
-                    {message.agentId}
-                  </span>
-                )}
-              </div>
+              <span style={{ fontWeight: 'bold' }}>
+                {message.sender === 'user' ? 'You' : 'AI Assistant'}
+              </span>
               {!message.isThinking && (
-                <span style={{ fontSize: '0.8rem' }}>
-                  {formatTime(message.timestamp)}
-                </span>
+                <span>{formatTime(message.timestamp)}</span>
               )}
             </div>
-            <div style={{ 
-              fontSize: '0.95rem', 
-              wordBreak: 'break-word',
-              whiteSpace: 'pre-wrap',
-              fontFamily: message.isAgentResponse ? 'monospace' : 'inherit',
-              lineHeight: '1.5',
-              padding: message.isAgentResponse ? '8px' : '0',
-              borderRadius: message.isAgentResponse ? '4px' : '0',
-              backgroundColor: message.isAgentResponse ? 'rgba(0, 0, 0, 0.2)' : 'transparent',
-              overflowX: 'auto'
-            }}>
+            <div style={{ fontSize: '0.95rem', wordBreak: 'break-word' }}>
               {message.text}
               {message.isThinking && (
                 <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
