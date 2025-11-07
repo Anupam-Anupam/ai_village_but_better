@@ -64,11 +64,11 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/serverdb?authSource=admin
-      - MONGODB_HOST=mongodb
-      - MONGODB_PORT=27017
+      - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
     networks:
       - ai-village-network
     depends_on:
+      - postgres
       - mongodb
       - agent1
       - agent2
