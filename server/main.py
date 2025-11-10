@@ -7,13 +7,15 @@ Uses PostgreSQL for task management and MongoDB for logs.
 
 import asyncio
 import json
-import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pymongo import MongoClient
-from datetime import datetime
 import os
 import sys
+from collections import defaultdict
+from datetime import datetime
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pymongo import MongoClient
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -130,16 +132,14 @@ async def create_task(request: Request):
                 for url in AGENT_URLS.values()
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         return {"task_id": task_id, "status": "created"}
-        
+
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
     except Exception as e:
         print(f"Error creating task: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
-    
-    return {"task_id": task_id, "status": "created"}
 
 @app.get("/tasks")
 async def get_tasks(agent_id: str = None, status: str = None, limit: int = 10):

@@ -347,6 +347,13 @@ const ChatTerminal = () => {
                   {message.taskStatus && <span>Status: {message.taskStatus}</span>}
                 </div>
               )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
             </div>
           );
         })}
