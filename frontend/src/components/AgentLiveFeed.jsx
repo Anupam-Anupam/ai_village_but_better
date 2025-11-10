@@ -99,8 +99,8 @@ const AgentLiveFeed = () => {
             ) : (
               <div className="agent-card__placeholder">
                 {minioAvailable
-                  ? 'Screenshot coming soon'
-                  : 'Screenshot storage taking a quick break'}
+                  ? 'No screenshot available yet'
+                  : 'Screenshot storage unavailable'}
               </div>
             )}
           </div>
@@ -139,8 +139,8 @@ const AgentLiveFeed = () => {
     <section className="live-feed">
       <header className="live-feed__header">
         <div>
-          <h1>AI Village Playground</h1>
-          <p>Follow each agent’s adventures with cheerful snapshots and gentle progress notes.</p>
+          <h1>AI Village Control Center</h1>
+          <p>Monitor agent activity, live screenshots, and progress in real time.</p>
         </div>
         <div className="live-feed__meta">
           <span>Last refreshed: {generatedAt ? formatTime(generatedAt) : '—'}</span>
@@ -155,11 +155,11 @@ const AgentLiveFeed = () => {
       )}
 
       {isLoading ? (
-        <div className="live-feed__loading">Gathering fresh updates…</div>
+        <div className="live-feed__loading">Loading live feed…</div>
       ) : (
         <div className="agent-grid">
           {agentCards || (
-            <div className="agent-grid__empty">Agents are getting ready. Stay tuned for their first updates!</div>
+            <div className="agent-grid__empty">No agent data available yet.</div>
           )}
         </div>
       )}
