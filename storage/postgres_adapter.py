@@ -506,3 +506,87 @@ class PostgresAdapter:
         finally:
             db.close()
 
+    def get_recent_progress(
+        self,
+        agent_id: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent task progress updates across tasks.
+
+        Args:
+            agent_id: Optional agent filter
+            limit: Maximum number of results to return
+
+        Returns:
+            List of progress update records ordered from newest to oldest
+        """
+        db = self.SessionLocal()
+        try:
+            query = db.query(TaskProgress)
+
+            if agent_id:
+                query = query.filter(TaskProgress.agent_id == agent_id)
+
+            progress_updates = (
+                query
+                .order_by(TaskProgress.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+
+            return [{
+                "id": p.id,
+                "task_id": p.task_id,
+                "agent_id": p.agent_id,
+                "progress_percent": p.progress_percent,
+                "message": p.message,
+                "data": p.data,
+                "timestamp": p.timestamp
+            } for p in progress_updates]
+        finally:
+            db.close()
+
+    def get_recent_agent_messages(
+        self,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Return recent agent-facing messages derived from task progress updates."""
+
+        db = self.SessionLocal()
+        try:
+            query = (
+                db.query(TaskProgress, Task)
+                .outerjoin(Task, Task.id == TaskProgress.task_id)
+                .order_by(TaskProgress.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+
+            messages: List[Dict[str, Any]] = []
+            for progress, task in query:
+                task_payload = None
+                if task:
+                    task_payload = {
+                        "id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "description": task.description,
+                        "metadata": task.task_metadata,
+                    }
+
+                messages.append({
+                    "id": progress.id,
+                    "task_id": progress.task_id,
+                    "agent_id": progress.agent_id,
+                    "message": progress.message,
+                    "progress_percent": progress.progress_percent,
+                    "data": progress.data,
+                    "timestamp": progress.timestamp,
+                    "task": task_payload,
+                })
+
+            return messages
+        finally:
+            db.close()
+
