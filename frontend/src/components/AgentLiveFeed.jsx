@@ -19,8 +19,6 @@ const formatPercent = (value) => {
   return `${parsed.toFixed(0)}%`;
 };
 
-const SCREENSHOT_SLOT_COUNT = 3;
-
 const AgentLiveFeed = () => {
   const [agents, setAgents] = useState([]);
   const [generatedAt, setGeneratedAt] = useState(null);
@@ -73,44 +71,9 @@ const AgentLiveFeed = () => {
     }
 
     return agents.map((agent) => {
-      const {
-        agent_id: agentId,
-        screenshots = [],
-        latest_progress: latestProgress,
-        progress_updates: progressUpdates = [],
-      } = agent;
+      const { agent_id: agentId, screenshots = [], latest_progress: latestProgress, progress_updates: progressUpdates = [] } = agent;
+      const primaryScreenshot = screenshots[0];
       const percentLabel = latestProgress ? formatPercent(latestProgress.progress_percent) : null;
-
-      const slotCount = Math.max(SCREENSHOT_SLOT_COUNT, screenshots.length || 0);
-      const screenshotSlots = Array.from({ length: slotCount }).map((_, index) => {
-        const screenshot = screenshots[index];
-        const uploadedAt = screenshot?.uploaded_at ? formatTime(screenshot.uploaded_at) : null;
-        const taskLabel = screenshot?.task_id ? `Task #${screenshot.task_id}` : null;
-        const summary = screenshot?.metadata?.caption || screenshot?.metadata?.summary;
-
-        return (
-          <div className="agent-card__shot" key={`${agentId}-shot-${index}`}>
-            {screenshot?.url ? (
-              <img
-                src={screenshot.url}
-                alt={`Screenshot ${index + 1} for ${agentId}`}
-                loading="lazy"
-              />
-            ) : (
-              <div className="agent-card__shot-placeholder">
-                {minioAvailable
-                  ? 'Waiting for a fresh screenshot'
-                  : 'Screenshot storage offline'}
-              </div>
-            )}
-            <div className="agent-card__shot-meta">
-              <span className="agent-card__shot-time">{uploadedAt ? `Updated ${uploadedAt}` : 'Not yet captured'}</span>
-              {taskLabel && <span className="agent-card__shot-task">{taskLabel}</span>}
-              {summary && <span className="agent-card__shot-summary">{summary}</span>}
-            </div>
-          </div>
-        );
-      });
 
       return (
         <article className="agent-card" key={agentId}>
@@ -126,24 +89,34 @@ const AgentLiveFeed = () => {
             </div>
           </div>
 
-          <div className="agent-card__shots">
-            {screenshotSlots}
+          <div className="agent-card__screenshot">
+            {primaryScreenshot?.url ? (
+              <img
+                src={primaryScreenshot.url}
+                alt={`Latest screenshot for ${agentId}`}
+                loading="lazy"
+              />
+            ) : (
+              <div className="agent-card__placeholder">
+                {minioAvailable
+                  ? 'No screenshot available yet'
+                  : 'Screenshot storage unavailable'}
+              </div>
+            )}
           </div>
 
           <div className="agent-card__meta">
-            <span>Last update: {formatTime(latestProgress?.timestamp || screenshots[0]?.uploaded_at)}</span>
-            {screenshots[0]?.task_id && (
-              <span className="agent-card__task">Task #{screenshots[0].task_id}</span>
+            <span>Last update: {formatTime(latestProgress?.timestamp || primaryScreenshot?.uploaded_at)}</span>
+            {primaryScreenshot?.task_id && (
+              <span className="agent-card__task">Task #{primaryScreenshot.task_id}</span>
             )}
           </div>
 
           {progressUpdates.length > 0 && (
             <ul className="agent-card__updates">
               {progressUpdates.slice(0, 3).map((update, index) => (
-                <li
-                  key={`${agentId}-${update?.id ?? index}`}
-                  className="agent-card__update"
-                >
+                <li key={`${agentId}-${index}-${update.timestamp || index}`}
+                    className="agent-card__update">
                   <div className="agent-card__update-time">{formatTime(update.timestamp)}</div>
                   <div className="agent-card__update-body">
                     {formatPercent(update.progress_percent) && (
@@ -166,8 +139,8 @@ const AgentLiveFeed = () => {
     <section className="live-feed">
       <header className="live-feed__header">
         <div>
-          <h1>AI Village Playground</h1>
-          <p>Follow each agent’s adventures with cheerful snapshots and gentle progress notes.</p>
+          <h1>AI Village Control Center</h1>
+          <p>Monitor agent activity, live screenshots, and progress in real time.</p>
         </div>
         <div className="live-feed__meta">
           <span>Last refreshed: {generatedAt ? formatTime(generatedAt) : '—'}</span>
@@ -182,11 +155,11 @@ const AgentLiveFeed = () => {
       )}
 
       {isLoading ? (
-        <div className="live-feed__loading">Gathering fresh updates…</div>
+        <div className="live-feed__loading">Loading live feed…</div>
       ) : (
         <div className="agent-grid">
           {agentCards || (
-            <div className="agent-grid__empty">Agents are getting ready. Stay tuned for their first updates!</div>
+            <div className="agent-grid__empty">No agent data available yet.</div>
           )}
         </div>
       )}

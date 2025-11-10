@@ -36,50 +36,14 @@ app.add_middleware(
 # Initialize PostgreSQL
 pg = PostgresAdapter()
 
-def _init_minio_adapter(pg_adapter: PostgresAdapter):
-    """Attempt to initialize a MinIO adapter with helpful fallbacks."""
-
-    candidate_endpoints = []
-
-    env_endpoint = os.getenv("MINIO_ENDPOINT")
-    if env_endpoint:
-        candidate_endpoints.append(env_endpoint)
-
-    # Common defaults for docker-compose and local setups
-    candidate_endpoints.extend(["minio:9000", "localhost:9000"])
-
-    seen = set()
-
-    for endpoint in candidate_endpoints:
-        if not endpoint or endpoint in seen:
-            continue
-        seen.add(endpoint)
-
-        try:
-            adapter = MinIOAdapter(
-                agent_id="frontend_viewer",
-                postgres_adapter=pg_adapter,
-                endpoint=endpoint,
-            )
-
-            # Perform a very small list operation to verify connectivity
-            try:
-                adapter.list_objects("screenshots", limit=1)
-            except Exception:
-                # Listing can fail if the bucket hasn't been created yet, but
-                # if the adapter was instantiated successfully we still treat
-                # MinIO as available and let later calls handle bucket setup.
-                pass
-
-            print(f"✅ MinIO adapter ready (endpoint={endpoint})")
-            return adapter, True
-        except Exception as exc:  # pylint: disable=broad-except
-            print(f"⚠️  Warning: Failed to initialize MinIO adapter at {endpoint}: {exc}")
-
-    return None, False
-
-
-minio_adapter, MINIO_AVAILABLE = _init_minio_adapter(pg)
+# Initialize MinIO adapter for generating screenshot URLs
+try:
+    minio_adapter = MinIOAdapter(agent_id="frontend_viewer", postgres_adapter=pg)
+    MINIO_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️  Warning: Failed to initialize MinIO adapter: {e}")
+    minio_adapter = None
+    MINIO_AVAILABLE = False
 
 # MongoDB connection for logs
 try:
@@ -191,163 +155,114 @@ async def get_agents_live(limit_per_agent: int = 3):
     if limit_per_agent < 1:
         limit_per_agent = 1
 
-    storage_online = bool(MINIO_AVAILABLE and minio_adapter is not None)
+    agents = {}
 
-    # Gather recent screenshot metadata so we can fill screenshot slots per agent
-    screenshot_limit = max(limit_per_agent * 8, 24)
-    metadata_records = pg.get_binary_files(bucket="screenshots", limit=screenshot_limit)
-
-    metadata_by_path = {}
-    metadata_by_agent = defaultdict(list)
-
-    for record in metadata_records:
-        object_path = record.get("object_path")
-        if not object_path:
-            continue
-
-        metadata_by_path[object_path] = record
-        agent_key = record.get("agent_id") or "unknown"
-        metadata_by_agent[agent_key].append(record)
-
-    candidate_agent_ids = set(AGENT_URLS.keys())
-    candidate_agent_ids.update(metadata_by_agent.keys())
-
-    estimated_agents = max(len(candidate_agent_ids), 1)
-    progress_limit = limit_per_agent * estimated_agents * 4
-    progress_records = pg.get_recent_progress(limit=progress_limit)
-
-    for update in progress_records:
-        candidate_agent_ids.add(update.get("agent_id") or "unknown")
-
-    if not candidate_agent_ids:
-        candidate_agent_ids.add("agent1")
-
-    agents = {
-        agent_id: {
+    for agent_id in AGENT_URLS.keys():
+        agents[agent_id] = {
             "agent_id": agent_id,
             "screenshots": [],
             "latest_progress": None,
-            "progress_updates": [],
+            "progress_updates": []
         }
-        for agent_id in sorted(candidate_agent_ids)
-    }
 
-    from datetime import datetime as _dt
+    # Gather recent screenshot metadata
+    screenshot_limit = limit_per_agent * max(len(agents), 1) * 2
+    metadata_records = pg.get_binary_files(bucket="screenshots", limit=screenshot_limit)
+    metadata_by_path = {record.get("object_path"): record for record in metadata_records}
 
-    for agent_id, agent_entry in agents.items():
-        screenshots_for_agent = []
-        used_paths = set()
+    screenshot_objects = []
+    if MINIO_AVAILABLE and minio_adapter:
+        try:
+            screenshot_objects = minio_adapter.list_objects(
+                "screenshots",
+                limit=screenshot_limit * 2 or 50
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to list screenshots from MinIO: {e}")
+    else:
+        print("ℹ️  MinIO not available, falling back to metadata cache only")
 
-        should_query_minio = storage_online and minio_adapter is not None and agent_id != "unknown"
+    if screenshot_objects:
+        from datetime import datetime as _dt
 
-        if should_query_minio:
-            prefix = f"{agent_id}/"
-            try:
-                object_candidates = minio_adapter.list_objects(
-                    "screenshots",
-                    prefix=prefix,
-                    limit=max(limit_per_agent * 4, 12),
-                )
-            except Exception as exc:  # pylint: disable=broad-except
-                print(f"⚠️  Warning: Failed to list screenshots for {agent_id}: {exc}")
-                object_candidates = []
-                storage_online = False
-            else:
-                object_candidates = sorted(
-                    object_candidates,
-                    key=lambda item: item.get("last_modified")
-                    if isinstance(item.get("last_modified"), _dt)
-                    else _dt.min,
-                    reverse=True,
-                )
+        def _sort_key(obj):
+            last_modified = obj.get("last_modified")
+            if isinstance(last_modified, _dt):
+                return last_modified
+            return _dt.min
 
-                for obj in object_candidates:
-                    object_path = obj.get("object_name")
-                    if not object_path:
-                        continue
+        for obj in sorted(screenshot_objects, key=_sort_key, reverse=True):
+            object_path = obj.get("object_name")
+            if not object_path:
+                continue
 
-                    if not object_path.startswith(prefix):
-                        continue
+            agent_id = object_path.split("/", 1)[0] if "/" in object_path else object_path.split("-", 1)[0]
+            agent_id = agent_id or "unknown"
 
-                    if "/screenshots/" not in object_path:
-                        continue
-
-                    used_paths.add(object_path)
-                    metadata = metadata_by_path.get(object_path, {})
-
-                    presigned_url = None
-                    if storage_online and minio_adapter is not None:
-                        try:
-                            presigned_url = minio_adapter.get_presigned_url(
-                                "screenshots",
-                                object_path,
-                                expires_seconds=300,
-                            )
-                        except Exception as exc:  # pylint: disable=broad-except
-                            print(
-                                f"⚠️  Warning: Failed to generate presigned URL for {object_path}: {exc}"
-                            )
-                            storage_online = False
-
-                    uploaded_at = metadata.get("uploaded_at") or obj.get("last_modified")
-
-                    screenshots_for_agent.append(
-                        {
-                            "object_path": object_path,
-                            "url": presigned_url,
-                            "task_id": metadata.get("task_id"),
-                            "uploaded_at": _serialize_datetime(uploaded_at),
-                            "metadata": metadata.get("metadata") or {},
-                            "size_bytes": obj.get("size"),
-                        }
-                    )
-
-                    if len(screenshots_for_agent) >= limit_per_agent:
-                        break
-
-        if len(screenshots_for_agent) < limit_per_agent:
-            fallback_records = sorted(
-                metadata_by_agent.get(agent_id, []),
-                key=lambda record: record.get("uploaded_at")
-                if isinstance(record.get("uploaded_at"), _dt)
-                else _dt.min,
-                reverse=True,
+            agent_entry = agents.setdefault(
+                agent_id,
+                {
+                    "agent_id": agent_id,
+                    "screenshots": [],
+                    "latest_progress": None,
+                    "progress_updates": []
+                }
             )
 
-            for record in fallback_records:
-                object_path = record.get("object_path")
-                if not object_path or object_path in used_paths:
-                    continue
+            if len(agent_entry["screenshots"]) >= limit_per_agent:
+                continue
 
-                presigned_url = None
-                if storage_online and minio_adapter is not None:
-                    try:
-                        presigned_url = minio_adapter.get_presigned_url(
-                            "screenshots",
-                            object_path,
-                            expires_seconds=300,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-except
-                        print(
-                            f"⚠️  Warning: Failed to generate presigned URL for cached {object_path}: {exc}"
-                        )
-                        storage_online = False
+            metadata = metadata_by_path.get(object_path, {})
 
-                screenshots_for_agent.append(
-                    {
-                        "object_path": object_path,
-                        "url": presigned_url,
-                        "task_id": record.get("task_id"),
-                        "uploaded_at": _serialize_datetime(record.get("uploaded_at")),
-                        "metadata": record.get("metadata") or {},
-                    }
+            presigned_url = None
+            try:
+                presigned_url = minio_adapter.get_presigned_url(
+                    "screenshots",
+                    object_path,
+                    expires_seconds=300
                 )
-                used_paths.add(object_path)
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to generate presigned URL for {object_path}: {e}")
 
-                if len(screenshots_for_agent) >= limit_per_agent:
-                    break
+            uploaded_at = metadata.get("uploaded_at")
+            if not uploaded_at:
+                uploaded_at = obj.get("last_modified")
 
-        agent_entry["screenshots"] = screenshots_for_agent
+            agent_entry["screenshots"].append({
+                "object_path": object_path,
+                "url": presigned_url,
+                "task_id": metadata.get("task_id"),
+                "uploaded_at": _serialize_datetime(uploaded_at),
+                "metadata": metadata.get("metadata") or {},
+                "size_bytes": obj.get("size")
+            })
+    else:
+        for record in metadata_records:
+            agent_id = record.get("agent_id") or "unknown"
+            agent_entry = agents.setdefault(
+                agent_id,
+                {
+                    "agent_id": agent_id,
+                    "screenshots": [],
+                    "latest_progress": None,
+                    "progress_updates": []
+                }
+            )
+
+            if len(agent_entry["screenshots"]) >= limit_per_agent:
+                continue
+
+            agent_entry["screenshots"].append({
+                "object_path": record.get("object_path"),
+                "url": None,
+                "task_id": record.get("task_id"),
+                "uploaded_at": _serialize_datetime(record.get("uploaded_at")),
+                "metadata": record.get("metadata") or {}
+            })
+
+    # Gather recent progress updates
+    progress_limit = limit_per_agent * max(len(agents), 1) * 4
+    progress_records = pg.get_recent_progress(limit=progress_limit)
 
     for update in progress_records:
         agent_id = update.get("agent_id") or "unknown"
@@ -357,8 +272,8 @@ async def get_agents_live(limit_per_agent: int = 3):
                 "agent_id": agent_id,
                 "screenshots": [],
                 "latest_progress": None,
-                "progress_updates": [],
-            },
+                "progress_updates": []
+            }
         )
 
         progress_payload = {
@@ -366,33 +281,24 @@ async def get_agents_live(limit_per_agent: int = 3):
             "message": update.get("message"),
             "progress_percent": update.get("progress_percent"),
             "timestamp": _serialize_datetime(update.get("timestamp")),
-            "data": update.get("data") or {},
+            "data": update.get("data") or {}
         }
 
-        existing_latest = agent_entry.get("latest_progress")
-        if not existing_latest or (
-            progress_payload["timestamp"]
-            and existing_latest.get("timestamp")
-            and progress_payload["timestamp"] > existing_latest.get("timestamp")
-        ):
+        if not agent_entry["latest_progress"]:
             agent_entry["latest_progress"] = progress_payload
 
         if len(agent_entry["progress_updates"]) < limit_per_agent:
             agent_entry["progress_updates"].append(progress_payload)
 
-    for entry in agents.values():
-        entry["progress_updates"].sort(
-            key=lambda item: item.get("timestamp") or "",
-            reverse=True,
-        )
-
-    agent_list = list(agents.values())
+    # Sort agents alphabetically for deterministic responses
+    agent_list = sorted(agents.values(), key=lambda item: item["agent_id"])
 
     return {
         "agents": agent_list,
         "generated_at": datetime.utcnow().isoformat(),
-        "minio_available": storage_online,
+        "minio_available": MINIO_AVAILABLE
     }
+
 
 @app.get("/chat/agent-responses")
 async def get_agent_responses(limit: int = 50):

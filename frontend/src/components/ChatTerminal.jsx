@@ -44,7 +44,7 @@ const buildAgentMessage = (record) => {
   return {
     id: `agent-response-${record.id}`,
     sender: 'agent',
-    agentId: record.agent_id || 'Agent',
+    agentId: record.agent_id || 'agent',
     text,
     timestamp,
     taskId: record.task_id ?? null,
@@ -170,7 +170,7 @@ const ChatTerminal = () => {
     const thinkingMessage = {
       id: `thinking-${Date.now()}`,
       sender: 'system',
-      text: 'Sending task to agents',
+      text: 'Sending task to agents...',
       timestamp: new Date(),
       isThinking: true,
     };
@@ -226,62 +226,126 @@ const ChatTerminal = () => {
           <div className="chat-terminal__title">Agent Playground</div>
           <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
         </div>
-      </header>
+      </div>
 
-      <div className="chat-terminal__messages">
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: '20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '15px'
+      }}>
         {historyLoading && (
-          <div className="chat-message chat-message--system">
-            <div className="chat-message__text">Loading conversation…</div>
+          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+            Loading conversation…
           </div>
         )}
 
         {!historyLoading && messages.length === 0 && !historyError && (
-          <div className="chat-message chat-message--system">
-            <div className="chat-message__text">Say hello! Agent responses will appear here as they make progress.</div>
+          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+            Waiting for agent responses…
           </div>
         )}
 
         {historyError && (
-          <div className="chat-message chat-message--error">
-            <div className="chat-message__text">{historyError}</div>
+          <div style={{
+            color: '#ff6b6b',
+            backgroundColor: 'rgba(255, 107, 107, 0.1)',
+            border: '1px solid rgba(255, 107, 107, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px'
+          }}>
+            {historyError}
           </div>
         )}
 
         {messages.map((message) => {
-          const classes = ['chat-message'];
-          if (message.sender === 'user') {
-            classes.push('chat-message--user');
-          } else if (message.sender === 'system') {
-            classes.push('chat-message--system');
-          } else {
-            classes.push('chat-message--agent');
-          }
-          if (message.isError) {
-            classes.push('chat-message--error');
-          }
+          const accentColor = message.sender === 'user'
+            ? '#1e90ff'
+            : message.sender === 'system'
+              ? '#8892b0'
+              : '#64ffda';
 
           return (
-            <div key={message.id} className={classes.join(' ')}>
-              <div className="chat-message__top">
-                <span className="chat-message__sender">{getSenderLabel(message)}</span>
+            <div
+              key={message.id}
+              style={{
+                padding: '12px 16px',
+                borderRadius: '8px',
+                backgroundColor: message.sender === 'user'
+                  ? 'rgba(30, 144, 255, 0.1)'
+                  : message.sender === 'system'
+                    ? 'rgba(136, 146, 176, 0.1)'
+                    : 'rgba(100, 255, 218, 0.08)',
+                borderLeft: `3px solid ${accentColor}`,
+                color: accentColor,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}
+            >
+              <div style={{
+                fontSize: '0.85rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                opacity: 0.85
+              }}>
+                <span style={{ fontWeight: 'bold' }}>
+                  {getSenderLabel(message)}
+                </span>
                 {!message.isThinking && (
-                  <span className="chat-message__time">{formatTime(message.timestamp)}</span>
+                  <span>{formatTime(message.timestamp)}</span>
                 )}
               </div>
-              <div className="chat-message__text">
-                {message.text}
+              <div style={{
+                fontSize: '0.95rem',
+                wordBreak: 'break-word',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '10px',
+                alignItems: 'center'
+              }}>
+                <span>{message.text}</span>
                 {message.isThinking && (
-                  <span className="chat-message__thinking" aria-hidden="true">
-                    <span />
-                    <span />
-                    <span />
+                  <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
+                    <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
+                    <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
+                    <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
+                  </span>
+                )}
+                {!message.isThinking && formatPercentLabel(message.progressPercent) && (
+                  <span style={{
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    border: `1px solid ${accentColor}`,
+                    fontSize: '0.8rem'
+                  }}>
+                    {formatPercentLabel(message.progressPercent)}
                   </span>
                 )}
               </div>
-              {!message.isThinking && formatPercentLabel(message.progressPercent) && (
-                <span className="chat-message__progress">
-                  {formatPercentLabel(message.progressPercent)}
-                </span>
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div style={{
+                  fontSize: '0.75rem',
+                  color: accentColor,
+                  opacity: 0.75,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '12px'
+                }}>
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
               )}
               {(message.taskId || message.taskTitle || message.taskStatus) && (
                 <div className="chat-message__tags">
@@ -296,14 +360,29 @@ const ChatTerminal = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      <form className="chat-terminal__form" onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} style={{
+        padding: '15px',
+        backgroundColor: 'rgba(10, 25, 47, 0.9)',
+        borderTop: '1px solid rgba(100, 255, 218, 0.2)',
+        display: 'flex',
+        gap: '10px'
+      }}>
         <input
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder="Enter a joyful mission for the agents…"
           disabled={isLoading}
-          className="chat-terminal__input"
+          style={{
+            flex: 1,
+            padding: '12px 15px',
+            backgroundColor: 'rgba(10, 25, 47, 0.8)',
+            border: '1px solid rgba(100, 255, 218, 0.2)',
+            borderRadius: '8px',
+            color: '#ccd6f6',
+            fontSize: '0.95rem',
+            outline: 'none'
+          }}
         />
         <button
           type="submit"
