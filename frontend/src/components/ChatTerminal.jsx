@@ -220,26 +220,11 @@ const ChatTerminal = () => {
   };
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      backgroundColor: 'rgba(10, 25, 47, 0.8)',
-      borderRadius: '12px',
-      border: '1px solid rgba(100, 255, 218, 0.2)',
-      overflow: 'hidden',
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
-    }}>
-      <div style={{
-        padding: '15px 20px',
-        backgroundColor: 'rgba(10, 25, 47, 0.9)',
-        borderBottom: '1px solid rgba(100, 255, 218, 0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-      }}>
-        <div style={{ color: '#64ffda', fontWeight: 'bold', fontSize: '1.1rem' }}>
-          AI Village Task Runner
+    <div className="chat-terminal">
+      <header className="chat-terminal__header">
+        <div>
+          <div className="chat-terminal__title">Agent Playground</div>
+          <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
         </div>
       </div>
 
@@ -355,6 +340,13 @@ const ChatTerminal = () => {
                   {message.taskStatus && <span>Status: {message.taskStatus}</span>}
                 </div>
               )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
             </div>
           );
         })}
@@ -372,7 +364,7 @@ const ChatTerminal = () => {
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Enter a task for the CUA agents..."
+          placeholder="Enter a joyful mission for the agents…"
           disabled={isLoading}
           style={{
             flex: 1,
@@ -388,32 +380,15 @@ const ChatTerminal = () => {
         <button
           type="submit"
           disabled={!inputValue.trim() || isLoading}
-          style={{
-            padding: '12px 20px',
-            backgroundColor: isLoading ? '#444' : '#64ffda',
-            color: '#0a192f',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: isLoading || !inputValue.trim() ? 'not-allowed' : 'pointer',
-            fontWeight: 'bold',
-            fontSize: '0.95rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
+          className="chat-terminal__send"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
+          Send
         </button>
       </form>
-      <style>{`
-        @keyframes blink {
-          0%, 100% { opacity: 0; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 };
