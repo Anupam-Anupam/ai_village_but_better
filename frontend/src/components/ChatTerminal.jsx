@@ -11,68 +11,144 @@ const ChatTerminal = () => {
       timestamp: new Date()
     }
   ]);
-  
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
   const seenResponsesRef = useRef(new Set());
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // helper: extract response text from various server shapes
+  const extractResponseText = (task, taskDetail) => {
+    // direct metadata.result (server stores result under metadata.result or result)
+    const tryPaths = [
+      () => task?.metadata?.result?.response_text,
+      () => task?.metadata?.result?.response,
+      () => task?.result?.response_text,
+      () => task?.result?.response,
+      () => taskDetail?.metadata?.result?.response_text,
+      () => taskDetail?.metadata?.result?.response,
+      () => {
+        // fallback: check last progress entries for result
+        const prog = (taskDetail?.progress || []).slice().reverse();
+        for (const p of prog) {
+          if (p?.data?.result?.response_text) return p.data.result.response_text;
+          if (p?.data?.result?.response) return (typeof p.data.result.response === 'string') ? p.data.result.response : JSON.stringify(p.data.result.response);
+          if (p?.data?.result) return typeof p.data.result === 'string' ? p.data.result : JSON.stringify(p.data.result);
+        }
+        return null;
+      }
+    ];
+    for (const fn of tryPaths) {
+      try {
+        const val = fn();
+        if (val) return (typeof val === 'string') ? val : JSON.stringify(val);
+      } catch (e) { /* ignore */ }
+    }
+    return null;
   };
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  // Poll for task updates
-  useEffect(() => {
     const pollInterval = setInterval(async () => {
       try {
-        // Get recent tasks
-        const response = await fetch(`${API_BASE}/tasks?limit=5`);
+        const response = await fetch(`${API_BASE}/tasks?limit=10`);
+        if (!response.ok) return;
         const data = await response.json();
-        
-        if (data.tasks && data.tasks.length > 0) {
-          // Process the most recent task
-          const latestTask = data.tasks[0];
-          
-          // Create a unique key for this task update
-          const taskKey = `task-${latestTask.id}-${latestTask.updated_at}`;
-          
-          if (!seenResponsesRef.current.has(taskKey)) {
-            seenResponsesRef.current.add(taskKey);
-            
-            // Add task update to messages
+        if (!data.tasks || data.tasks.length === 0) return;
+
+        for (const task of data.tasks) {
+          // Build a unique key based on task updated time (server may update metadata.result)
+          const taskKeyBase = `task-${task.id}-${task.updated_at || task.metadata?.completed_at || ''}`;
+
+          // fetch task details to inspect progress and metadata
+          const taskDetailResponse = await fetch(`${API_BASE}/task/${task.id}`);
+          const taskDetail = taskDetailResponse.ok ? await taskDetailResponse.json() : null;
+
+          // extract agent response (if any)
+          const responseText = extractResponseText(task, taskDetail);
+
+          if (responseText) {
+            // dedupe by task id + response text (or timestamp if available)
+            const respStamp = (task.metadata?.result?.timestamp) || (task.result?.timestamp) || (taskDetail?.progress?.slice(-1)?.[0]?.timestamp) || task.updated_at || '';
+            const seenKey = `resp-${task.id}-${respStamp}-${responseText.slice(0,80)}`;
+
+            if (!seenResponsesRef.current.has(seenKey)) {
+              seenResponsesRef.current.add(seenKey);
+
+              // insert AI assistant message with the real response
+              const aiMessage = {
+                id: `task-response-${task.id}-${Date.now()}`,
+                text: responseText,
+                sender: 'agent',
+                timestamp: new Date(respStamp || Date.now()),
+                taskId: task.id,
+                status: task.status || 'completed',
+                metadata: task.metadata || {}
+              };
+
+              setMessages(prev => {
+                // remove any previous system/task placeholder for this task (id: task-<id>)
+                const filtered = prev.filter(m => m.id !== `task-${task.id}`);
+                return [...filtered, aiMessage];
+              });
+
+              // also update/insert a compact task system message (for list view)
+              setMessages(prev => {
+                const sysId = `task-${task.id}`;
+                const existingIndex = prev.findIndex(m => m.id === sysId);
+                const sysMsg = {
+                  id: sysId,
+                  text: `[${(task.status || 'COMPLETED').toUpperCase()}] ${task.description || task.title || ''}`,
+                  sender: 'system',
+                  timestamp: new Date(task.updated_at || Date.now()),
+                  taskId: task.id,
+                  status: task.status || 'completed',
+                  metadata: task.metadata || {}
+                };
+                if (existingIndex >= 0) {
+                  const copy = [...prev];
+                  copy[existingIndex] = { ...copy[existingIndex], ...sysMsg };
+                  return copy;
+                }
+                return [...prev, sysMsg];
+              });
+            }
+            continue;
+          }
+
+          // If no response yet but task changed (status update), update or insert system message
+          const taskSysKey = `task-${task.id}-${task.updated_at}`;
+          if (!seenResponsesRef.current.has(taskSysKey)) {
+            seenResponsesRef.current.add(taskSysKey);
+
             const taskMessage = {
-              id: `task-${latestTask.id}`,
-              text: `[Task ${latestTask.status}] ${latestTask.title}`,
+              id: `task-${task.id}`,
+              text: `[${(task.status || 'PENDING').toUpperCase()}] ${task.description || task.title || ''}`,
               sender: 'system',
-              timestamp: new Date(latestTask.updated_at),
-              taskId: latestTask.id
+              timestamp: new Date(task.updated_at || Date.now()),
+              taskId: task.id,
+              status: task.status || 'pending',
+              metadata: task.metadata || {}
             };
-            
+
             setMessages(prev => {
-              // Check if this task update already exists
-              const exists = prev.some(msg => 
-                msg.id === taskMessage.id && 
-                msg.text === taskMessage.text
-              );
-              if (exists) return prev;
-              
-              // Replace previous message for this task if it exists
-              return [
-                ...prev.filter(msg => msg.id !== taskMessage.id),
-                taskMessage
-              ];
+              const existingIndex = prev.findIndex(msg => msg.id === taskMessage.id);
+              if (existingIndex >= 0) {
+                const newMessages = [...prev];
+                newMessages[existingIndex] = {
+                  ...newMessages[existingIndex],
+                  ...taskMessage,
+                  timestamp: newMessages[existingIndex].timestamp
+                };
+                return newMessages;
+              } else {
+                return [...prev, taskMessage];
+              }
             });
           }
         }
       } catch (error) {
         console.error('Error polling task updates:', error);
       }
-    }, 3000); // Poll every 3 seconds
+    }, 2000);
 
     return () => clearInterval(pollInterval);
   }, []);
@@ -82,64 +158,30 @@ const ChatTerminal = () => {
     if (!inputValue.trim() || isLoading) return;
 
     const taskText = inputValue.trim();
+    const taskTimestamp = new Date();
 
     // Add user message
     const userMessage = {
-      id: Date.now(),
+      id: `user-${Date.now()}`,
       text: taskText,
       sender: 'user',
-      timestamp: new Date()
+      timestamp: taskTimestamp,
+      type: 'user_input'
     };
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    // Add thinking message
-    const thinkingMessage = {
-      id: Date.now() + 0.5,
-      text: 'Sending task to agents...',
-      sender: 'agent',
-      timestamp: new Date(),
-      isThinking: true
-    };
-    
-    setMessages(prev => [...prev, thinkingMessage]);
-
     try {
-      // Create a new task via the API
       const response = await fetch(`${API_BASE}/task`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text: taskText }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: taskText, timestamp: taskTimestamp.toISOString() }),
       });
-
       const data = await response.json();
-
-      // Remove thinking message
-      setMessages(prev => prev.filter(msg => !msg.isThinking));
-
-      if (response.ok) {
-        // Add the task to the UI
-        const taskMessage = {
-          id: `task-${data.task_id}`,
-          text: `[Task created] ${taskText}`,
-          sender: 'system',
-          timestamp: new Date(),
-          taskId: data.task_id
-        };
-        
-        setMessages(prev => [...prev, taskMessage]);
-      } else {
-        throw new Error(data.detail || 'Failed to create task');
-      }
+      if (!response.ok) throw new Error(data.detail || 'Failed to create task');
     } catch (error) {
-      // Remove thinking message
-      setMessages(prev => prev.filter(msg => !msg.isThinking));
-      
-      // Add error message
       const errorMessage = {
         id: Date.now() + 1,
         text: `Error: ${error.message}`,
@@ -154,7 +196,19 @@ const ChatTerminal = () => {
   };
 
   const formatTime = (date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (!(date instanceof Date)) date = new Date(date);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  // Format message content with proper line breaks
+  const formatMessageText = (text) => {
+    if (!text) return '';
+    return text.split('\n').map((line, i) => (
+      <span key={i}>
+        {line}
+        <br />
+      </span>
+    ));
   };
 
   return (
@@ -193,12 +247,18 @@ const ChatTerminal = () => {
           <div 
             key={message.id} 
             style={{
-              padding: '12px 16px',
-              borderRadius: '8px',
+              padding: '14px 18px',
+              borderRadius: '10px',
               backgroundColor: message.sender === 'user' 
-                ? 'rgba(30, 144, 255, 0.1)' 
-                : 'rgba(100, 255, 218, 0.1)',
+                ? 'rgba(30, 144, 255, 0.15)' 
+                : message.status === 'failed' 
+                  ? 'rgba(255, 71, 87, 0.15)'
+                  : message.status === 'completed'
+                    ? 'rgba(100, 255, 218, 0.15)'
+                    : 'rgba(100, 120, 150, 0.1)',
               borderLeft: `3px solid ${message.sender === 'user' ? '#1e90ff' : '#64ffda'}`,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
               color: message.sender === 'user' ? '#1e90ff' : '#64ffda'
             }}
           >
@@ -210,21 +270,12 @@ const ChatTerminal = () => {
               justifyContent: 'space-between'
             }}>
               <span style={{ fontWeight: 'bold' }}>
-                {message.sender === 'user' ? 'You' : 'AI Assistant'}
+                {message.sender === 'user' ? 'You' : (message.sender === 'agent' ? 'AI Assistant' : 'System')}
               </span>
-              {!message.isThinking && (
-                <span>{formatTime(message.timestamp)}</span>
-              )}
+              <span>{formatTime(message.timestamp)}</span>
             </div>
             <div style={{ fontSize: '0.95rem', wordBreak: 'break-word' }}>
-              {message.text}
-              {message.isThinking && (
-                <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
-                  <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
-                  <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
-                  <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
-                </span>
-              )}
+              {formatMessageText(message.text)}
             </div>
           </div>
         ))}
@@ -279,12 +330,6 @@ const ChatTerminal = () => {
           </svg>
         </button>
       </form>
-      <style>{`
-        @keyframes blink {
-          0%, 100% { opacity: 0; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 };

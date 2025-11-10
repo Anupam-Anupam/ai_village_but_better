@@ -2,8 +2,103 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import os
 from .executor import run_shell_command, browse_url, write_file, read_file, generate_file, render_file_screenshot
+import asyncpg
+import httpx
+import json
+from typing import Any
 
 app = FastAPI(title="Agent Sandbox", version="0.1")
+
+# New: DB pool for task routing to CUA agents
+DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g. postgres://user:pass@host:port/dbname
+_db_pool: asyncpg.pool.Pool | None = None
+
+@app.on_event("startup")
+async def _startup():
+    global _db_pool
+    if DATABASE_URL:
+        _db_pool = await asyncpg.create_pool(DATABASE_URL, max_size=8)
+    else:
+        _db_pool = None  # DB operations will error if missing
+
+@app.on_event("shutdown")
+async def _shutdown():
+    global _db_pool
+    if _db_pool:
+        await _db_pool.close()
+        _db_pool = None
+
+async def _fetch_task(task_id: int) -> Any:
+    if not _db_pool:
+        raise HTTPException(status_code=500, detail="database not configured")
+    row = await _db_pool.fetchrow("SELECT id, status, payload, agent_url FROM tasks WHERE id=$1", task_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="task not found")
+    return row
+
+async def _update_task_status(task_id: int, status: str, result: Any | None = None):
+    if not _db_pool:
+        raise HTTPException(status_code=500, detail="database not configured")
+    if result is None:
+        await _db_pool.execute("UPDATE tasks SET status=$1, updated_at=now() WHERE id=$2", status, task_id)
+    else:
+        # store result as JSON text
+        await _db_pool.execute(
+            "UPDATE tasks SET status=$1, result=$2::jsonb, updated_at=now() WHERE id=$3",
+            status, json.dumps(result), task_id
+        )
+
+async def run_task(task_id: int) -> Any:
+    """
+    Route the task to its configured CUA agent, store the agent response in DB,
+    and return the response. No placeholder messages are written to the DB.
+    Expected tasks table columns: id, status, payload (jsonb), agent_url (text), result (jsonb).
+    """
+    row = await _fetch_task(task_id)
+    task_status = row["status"]
+    if task_status == "completed":
+        # return stored result if already completed
+        if not _db_pool:
+            raise HTTPException(status_code=500, detail="database not configured")
+        stored = await _db_pool.fetchrow("SELECT result FROM tasks WHERE id=$1", task_id)
+        return stored["result"] if stored else None
+
+    # mark processing (no human-readable placeholder)
+    await _update_task_status(task_id, "processing")
+
+    agent_url = row.get("agent_url")
+    if not agent_url:
+        await _update_task_status(task_id, "failed", {"error": "missing agent_url"})
+        raise HTTPException(status_code=400, detail="task missing agent_url")
+
+    payload = row.get("payload") or {}
+
+    # POST to CUA agent and capture response
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(agent_url, json=payload)
+            try:
+                resp_data = resp.json()
+            except Exception:
+                resp_data = {"status_code": resp.status_code, "text": resp.text}
+    except Exception as e:
+        err = {"error": str(e)}
+        await _update_task_status(task_id, "failed", err)
+        raise HTTPException(status_code=502, detail=err)
+
+    # store final response and mark completed
+    await _update_task_status(task_id, "completed", resp_data)
+    return resp_data
+
+# New endpoint to run a task and return the agent response stored in DB
+@app.post("/tasks/{task_id}/run")
+async def run_task_endpoint(task_id: int):
+    """
+    Trigger routing of the task to its CUA agent, persist agent response in Postgres,
+    and return the agent response to the frontend.
+    """
+    result = await run_task(task_id)
+    return {"task_id": task_id, "result": result}
 
 class ExecutePayload(BaseModel):
     type: str = "shell"   # "shell", "browse", "write", or "generate"
