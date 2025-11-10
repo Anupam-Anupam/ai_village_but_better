@@ -1,157 +1,154 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { API_BASE, REFRESH_INTERVALS } from '../config';
 
-// Try to detect the API port dynamically, fallback to 8001
-const API_BASE = 'http://localhost:8000';
+const ensureDate = (value) => {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date();
+  }
+  return date;
+};
+
+const normalizePercent = (value) => {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, parsed));
+};
+
+const formatPercentLabel = (value) => {
+  const percent = normalizePercent(value);
+  if (percent === null) {
+    return null;
+  }
+  return `${percent.toFixed(0)}%`;
+};
+
+const buildAgentMessage = (record) => {
+  if (!record || record.id === undefined || record.id === null) {
+    return null;
+  }
+
+  const timestamp = ensureDate(record.timestamp);
+  const progressPercent = normalizePercent(record.progress_percent);
+  const text = (record.message && record.message.trim().length > 0)
+    ? record.message
+    : (progressPercent !== null
+      ? `Progress update: ${progressPercent.toFixed(0)}% complete.`
+      : 'Progress update received.');
+
+  return {
+    id: `agent-response-${record.id}`,
+    sender: 'agent',
+    agentId: record.agent_id || 'agent',
+    text,
+    timestamp,
+    taskId: record.task_id ?? null,
+    progressPercent,
+    taskTitle: record.task?.title ?? null,
+    taskStatus: record.task?.status ?? null,
+  };
+};
+
+const formatTime = (date) => {
+  if (!date) {
+    return '—';
+  }
+  const safeDate = ensureDate(date);
+  return safeDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const getSenderLabel = (message) => {
+  if (message.sender === 'user') {
+    return 'You';
+  }
+  if (message.sender === 'system') {
+    return 'System';
+  }
+  return message.agentId || 'Agent';
+};
 
 const ChatTerminal = () => {
-  const [messages, setMessages] = useState([
-    { 
-      text: 'Hello! I\'m your AI assistant. How can I help you today?', 
-      sender: 'agent',
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(null);
   const messagesEndRef = useRef(null);
-  const seenResponsesRef = useRef(new Set());
+  const abortRef = useRef(false);
 
-  // helper: extract response text from various server shapes
-  const extractResponseText = (task, taskDetail) => {
-    // direct metadata.result (server stores result under metadata.result or result)
-    const tryPaths = [
-      () => task?.metadata?.result?.response_text,
-      () => task?.metadata?.result?.response,
-      () => task?.result?.response_text,
-      () => task?.result?.response,
-      () => taskDetail?.metadata?.result?.response_text,
-      () => taskDetail?.metadata?.result?.response,
-      () => {
-        // fallback: check last progress entries for result
-        const prog = (taskDetail?.progress || []).slice().reverse();
-        for (const p of prog) {
-          if (p?.data?.result?.response_text) return p.data.result.response_text;
-          if (p?.data?.result?.response) return (typeof p.data.result.response === 'string') ? p.data.result.response : JSON.stringify(p.data.result.response);
-          if (p?.data?.result) return typeof p.data.result === 'string' ? p.data.result : JSON.stringify(p.data.result);
-        }
-        return null;
-      }
-    ];
-    for (const fn of tryPaths) {
-      try {
-        const val = fn();
-        if (val) return (typeof val === 'string') ? val : JSON.stringify(val);
-      } catch (e) { /* ignore */ }
+  const upsertMessages = useCallback((incoming = []) => {
+    if (!incoming.length) {
+      return;
     }
-    return null;
-  };
+
+    setMessages((prev) => {
+      const map = new Map(prev.map((msg) => [msg.id, msg]));
+      incoming.forEach((msg) => {
+        if (!msg || msg.id === undefined || msg.id === null) {
+          return;
+        }
+        const timestamp = ensureDate(msg.timestamp);
+        map.set(msg.id, { ...msg, timestamp });
+      });
+
+      return Array.from(map.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    });
+  }, []);
+
+  const fetchAgentResponses = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/agent-responses?limit=60`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to load agent responses');
+      }
+
+      if (abortRef.current) {
+        return;
+      }
+
+      const normalized = (Array.isArray(data.messages) ? data.messages : [])
+        .map(buildAgentMessage)
+        .filter(Boolean);
+
+      if (normalized.length) {
+        upsertMessages(normalized);
+      }
+      setHistoryError(null);
+    } catch (error) {
+      if (abortRef.current) {
+        return;
+      }
+      console.error('Error loading agent responses:', error);
+      setHistoryError(error.message || 'Unable to load agent responses');
+    } finally {
+      if (!abortRef.current) {
+        setHistoryLoading(false);
+      }
+    }
+  }, [upsertMessages]);
 
   useEffect(() => {
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`${API_BASE}/tasks?limit=10`);
-        if (!response.ok) return;
-        const data = await response.json();
-        if (!data.tasks || data.tasks.length === 0) return;
+    abortRef.current = false;
 
-        for (const task of data.tasks) {
-          // Build a unique key based on task updated time (server may update metadata.result)
-          const taskKeyBase = `task-${task.id}-${task.updated_at || task.metadata?.completed_at || ''}`;
+    fetchAgentResponses();
+    const intervalId = setInterval(fetchAgentResponses, REFRESH_INTERVALS.chat);
 
-          // fetch task details to inspect progress and metadata
-          const taskDetailResponse = await fetch(`${API_BASE}/task/${task.id}`);
-          const taskDetail = taskDetailResponse.ok ? await taskDetailResponse.json() : null;
+    return () => {
+      abortRef.current = true;
+      clearInterval(intervalId);
+    };
+  }, [fetchAgentResponses]);
 
-          // extract agent response (if any)
-          const responseText = extractResponseText(task, taskDetail);
-
-          if (responseText) {
-            // dedupe by task id + response text (or timestamp if available)
-            const respStamp = (task.metadata?.result?.timestamp) || (task.result?.timestamp) || (taskDetail?.progress?.slice(-1)?.[0]?.timestamp) || task.updated_at || '';
-            const seenKey = `resp-${task.id}-${respStamp}-${responseText.slice(0,80)}`;
-
-            if (!seenResponsesRef.current.has(seenKey)) {
-              seenResponsesRef.current.add(seenKey);
-
-              // insert AI assistant message with the real response
-              const aiMessage = {
-                id: `task-response-${task.id}-${Date.now()}`,
-                text: responseText,
-                sender: 'agent',
-                timestamp: new Date(respStamp || Date.now()),
-                taskId: task.id,
-                status: task.status || 'completed',
-                metadata: task.metadata || {}
-              };
-
-              setMessages(prev => {
-                // remove any previous system/task placeholder for this task (id: task-<id>)
-                const filtered = prev.filter(m => m.id !== `task-${task.id}`);
-                return [...filtered, aiMessage];
-              });
-
-              // also update/insert a compact task system message (for list view)
-              setMessages(prev => {
-                const sysId = `task-${task.id}`;
-                const existingIndex = prev.findIndex(m => m.id === sysId);
-                const sysMsg = {
-                  id: sysId,
-                  text: `[${(task.status || 'COMPLETED').toUpperCase()}] ${task.description || task.title || ''}`,
-                  sender: 'system',
-                  timestamp: new Date(task.updated_at || Date.now()),
-                  taskId: task.id,
-                  status: task.status || 'completed',
-                  metadata: task.metadata || {}
-                };
-                if (existingIndex >= 0) {
-                  const copy = [...prev];
-                  copy[existingIndex] = { ...copy[existingIndex], ...sysMsg };
-                  return copy;
-                }
-                return [...prev, sysMsg];
-              });
-            }
-            continue;
-          }
-
-          // If no response yet but task changed (status update), update or insert system message
-          const taskSysKey = `task-${task.id}-${task.updated_at}`;
-          if (!seenResponsesRef.current.has(taskSysKey)) {
-            seenResponsesRef.current.add(taskSysKey);
-
-            const taskMessage = {
-              id: `task-${task.id}`,
-              text: `[${(task.status || 'PENDING').toUpperCase()}] ${task.description || task.title || ''}`,
-              sender: 'system',
-              timestamp: new Date(task.updated_at || Date.now()),
-              taskId: task.id,
-              status: task.status || 'pending',
-              metadata: task.metadata || {}
-            };
-
-            setMessages(prev => {
-              const existingIndex = prev.findIndex(msg => msg.id === taskMessage.id);
-              if (existingIndex >= 0) {
-                const newMessages = [...prev];
-                newMessages[existingIndex] = {
-                  ...newMessages[existingIndex],
-                  ...taskMessage,
-                  timestamp: newMessages[existingIndex].timestamp
-                };
-                return newMessages;
-              } else {
-                return [...prev, taskMessage];
-              }
-            });
-          }
-        }
-      } catch (error) {
-        console.error('Error polling task updates:', error);
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, []);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -160,18 +157,26 @@ const ChatTerminal = () => {
     const taskText = inputValue.trim();
     const taskTimestamp = new Date();
 
-    // Add user message
     const userMessage = {
       id: `user-${Date.now()}`,
-      text: taskText,
       sender: 'user',
-      timestamp: taskTimestamp,
-      type: 'user_input'
+      text: taskText,
+      timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    upsertMessages([userMessage]);
     setInputValue('');
     setIsLoading(true);
+
+    const thinkingMessage = {
+      id: `thinking-${Date.now()}`,
+      sender: 'system',
+      text: 'Sending task to agents...',
+      timestamp: new Date(),
+      isThinking: true,
+    };
+
+    upsertMessages([thinkingMessage]);
 
     try {
       const response = await fetch(`${API_BASE}/task`, {
@@ -180,61 +185,47 @@ const ChatTerminal = () => {
         body: JSON.stringify({ text: taskText, timestamp: taskTimestamp.toISOString() }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Failed to create task');
+
+      setMessages((prev) => prev.filter((msg) => !msg.isThinking));
+
+      if (response.ok) {
+        const taskMessage = {
+          id: `task-${data.task_id}`,
+          sender: 'system',
+          text: `[Task created] ${taskText}`,
+          timestamp: new Date(),
+          taskId: data.task_id,
+        };
+        upsertMessages([taskMessage]);
+        fetchAgentResponses();
+      } else {
+        throw new Error(data.detail || 'Failed to create task');
+      }
     } catch (error) {
+      setMessages((prev) => prev.filter((msg) => !msg.isThinking));
+
       const errorMessage = {
-        id: Date.now() + 1,
+        id: `error-${Date.now()}`,
+        sender: 'system',
         text: `Error: ${error.message}`,
-        sender: 'agent',
         timestamp: new Date(),
-        isError: true
+        isError: true,
       };
-      setMessages(prev => [...prev, errorMessage]);
+      upsertMessages([errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const formatTime = (date) => {
-    if (!(date instanceof Date)) date = new Date(date);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  };
-
-  // Format message content with proper line breaks
-  const formatMessageText = (text) => {
-    if (!text) return '';
-    return text.split('\n').map((line, i) => (
-      <span key={i}>
-        {line}
-        <br />
-      </span>
-    ));
-  };
-
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      backgroundColor: 'rgba(10, 25, 47, 0.8)',
-      borderRadius: '12px',
-      border: '1px solid rgba(100, 255, 218, 0.2)',
-      overflow: 'hidden',
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
-    }}>
-      <div style={{
-        padding: '15px 20px',
-        backgroundColor: 'rgba(10, 25, 47, 0.9)',
-        borderBottom: '1px solid rgba(100, 255, 218, 0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-      }}>
-        <div style={{ color: '#64ffda', fontWeight: 'bold', fontSize: '1.1rem' }}>
-          AI Village Task Runner
+    <div className="chat-terminal">
+      <header className="chat-terminal__header">
+        <div>
+          <div className="chat-terminal__title">Agent Playground</div>
+          <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
         </div>
       </div>
-      
+
       <div style={{
         flex: 1,
         overflowY: 'auto',
@@ -243,45 +234,130 @@ const ChatTerminal = () => {
         flexDirection: 'column',
         gap: '15px'
       }}>
-        {messages.map((message) => (
-          <div 
-            key={message.id} 
-            style={{
-              padding: '14px 18px',
-              borderRadius: '10px',
-              backgroundColor: message.sender === 'user' 
-                ? 'rgba(30, 144, 255, 0.15)' 
-                : message.status === 'failed' 
-                  ? 'rgba(255, 71, 87, 0.15)'
-                  : message.status === 'completed'
-                    ? 'rgba(100, 255, 218, 0.15)'
-                    : 'rgba(100, 120, 150, 0.1)',
-              borderLeft: `3px solid ${message.sender === 'user' ? '#1e90ff' : '#64ffda'}`,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              color: message.sender === 'user' ? '#1e90ff' : '#64ffda'
-            }}
-          >
-            <div style={{ 
-              fontSize: '0.85rem', 
-              marginBottom: '8px',
-              opacity: 0.8,
-              display: 'flex',
-              justifyContent: 'space-between'
-            }}>
-              <span style={{ fontWeight: 'bold' }}>
-                {message.sender === 'user' ? 'You' : (message.sender === 'agent' ? 'AI Assistant' : 'System')}
-              </span>
-              <span>{formatTime(message.timestamp)}</span>
-            </div>
-            <div style={{ fontSize: '0.95rem', wordBreak: 'break-word' }}>
-              {formatMessageText(message.text)}
-            </div>
+        {historyLoading && (
+          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+            Loading conversation…
           </div>
-        ))}
+        )}
+
+        {!historyLoading && messages.length === 0 && !historyError && (
+          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+            Waiting for agent responses…
+          </div>
+        )}
+
+        {historyError && (
+          <div style={{
+            color: '#ff6b6b',
+            backgroundColor: 'rgba(255, 107, 107, 0.1)',
+            border: '1px solid rgba(255, 107, 107, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px'
+          }}>
+            {historyError}
+          </div>
+        )}
+
+        {messages.map((message) => {
+          const accentColor = message.sender === 'user'
+            ? '#1e90ff'
+            : message.sender === 'system'
+              ? '#8892b0'
+              : '#64ffda';
+
+          return (
+            <div
+              key={message.id}
+              style={{
+                padding: '12px 16px',
+                borderRadius: '8px',
+                backgroundColor: message.sender === 'user'
+                  ? 'rgba(30, 144, 255, 0.1)'
+                  : message.sender === 'system'
+                    ? 'rgba(136, 146, 176, 0.1)'
+                    : 'rgba(100, 255, 218, 0.08)',
+                borderLeft: `3px solid ${accentColor}`,
+                color: accentColor,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}
+            >
+              <div style={{
+                fontSize: '0.85rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                opacity: 0.85
+              }}>
+                <span style={{ fontWeight: 'bold' }}>
+                  {getSenderLabel(message)}
+                </span>
+                {!message.isThinking && (
+                  <span>{formatTime(message.timestamp)}</span>
+                )}
+              </div>
+              <div style={{
+                fontSize: '0.95rem',
+                wordBreak: 'break-word',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '10px',
+                alignItems: 'center'
+              }}>
+                <span>{message.text}</span>
+                {message.isThinking && (
+                  <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
+                    <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
+                    <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
+                    <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
+                  </span>
+                )}
+                {!message.isThinking && formatPercentLabel(message.progressPercent) && (
+                  <span style={{
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    border: `1px solid ${accentColor}`,
+                    fontSize: '0.8rem'
+                  }}>
+                    {formatPercentLabel(message.progressPercent)}
+                  </span>
+                )}
+              </div>
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div style={{
+                  fontSize: '0.75rem',
+                  color: accentColor,
+                  opacity: 0.75,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '12px'
+                }}>
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
-      
+
       <form onSubmit={handleSubmit} style={{
         padding: '15px',
         backgroundColor: 'rgba(10, 25, 47, 0.9)',
@@ -293,9 +369,8 @@ const ChatTerminal = () => {
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Enter a task for the CUA agents..."
+          placeholder="Enter a joyful mission for the agents…"
           disabled={isLoading}
-          autoFocus
           style={{
             flex: 1,
             padding: '12px 15px',
@@ -307,27 +382,16 @@ const ChatTerminal = () => {
             outline: 'none'
           }}
         />
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={!inputValue.trim() || isLoading}
-          style={{
-            padding: '12px 20px',
-            backgroundColor: isLoading ? '#444' : '#64ffda',
-            color: '#0a192f',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: isLoading || !inputValue.trim() ? 'not-allowed' : 'pointer',
-            fontWeight: 'bold',
-            fontSize: '0.95rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
+          className="chat-terminal__send"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
+          Send
         </button>
       </form>
     </div>
