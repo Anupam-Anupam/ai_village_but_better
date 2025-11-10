@@ -9,19 +9,16 @@ import asyncio
 import json
 import httpx
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from datetime import datetime
 import os
-from typing import Optional
 import sys
-from minio import Minio
-from minio.error import S3Error
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from storage import PostgresAdapter
+from storage.minio_adapter import MinIOAdapter
 
 app = FastAPI()
 
@@ -37,14 +34,14 @@ app.add_middleware(
 # Initialize PostgreSQL
 pg = PostgresAdapter()
 
-# Initialize MinIO client
-minio_client = Minio(
-    "minio:9000",
-    access_key="minioadmin",
-    secret_key="minioadmin",
-    secure=False
-)
-BUCKET_NAME = "screenshots"
+# Initialize MinIO adapter for generating screenshot URLs
+try:
+    minio_adapter = MinIOAdapter(agent_id="frontend_viewer", postgres_adapter=pg)
+    MINIO_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️  Warning: Failed to initialize MinIO adapter: {e}")
+    minio_adapter = None
+    MINIO_AVAILABLE = False
 
 # MongoDB connection for logs
 try:
@@ -63,87 +60,18 @@ except Exception as e:
 # Agent URLs - using Docker service names
 AGENT_URLS = {
     "agent1": "http://agent1:8001/execute",
-    "agent2": "http://agent2:8001/execute", 
+    "agent2": "http://agent2:8001/execute",
     "agent3": "http://agent3:8001/execute"
 }
 
-# Run task API URL (the canonical source for agent responses)
-RUN_TASK_API = os.getenv("RUN_TASK_API", "http://localhost:8001")
 
-@app.post("/message")
-async def send_message(request: Request):
-    """Send message to all agents and store in databases"""
-    data = await request.json()
-    message = data.get("message", "")
-    
-    if not message:
-        return {"error": "No message provided"}
-    
-    # Store in server database
-    if server_db:
-        server_db.messages.insert_one({
-            "message": message,
-            "timestamp": datetime.now(),
-            "source": "server"
-        })
-    
-    # Send to all agents
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        tasks = [
-            client.post(url, json={
-                "input_text": message,
-                "task_type": "general"
-            })
-            for url in AGENT_URLS.values()
-        ]
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Collect results
-    results = {}
-    for name, response in zip(AGENT_URLS.keys(), responses):
-        if isinstance(response, Exception):
-            results[name] = {"error": str(response)}
-        else:
-            results[name] = response.json()
-    
-    return {
-        "message": message,
-        "server_stored": True,
-        "agent_responses": results
-    }
-
-@app.get("/messages")
-async def get_messages():
-    """Get all messages from server database"""
-    if not server_db:
-        return {"messages": []}
-    messages = list(server_db.messages.find().sort("timestamp", -1).limit(10))
-    for msg in messages:
-        msg["_id"] = str(msg["_id"])
-        msg["timestamp"] = msg["timestamp"].isoformat()
-    return {"messages": messages}
-
-@app.get("/agent-responses")
-async def get_agent_responses():
-    """Proxy to run_task.py API for agent responses.
-    
-    This endpoint proxies to the canonical source (run_task.py on port 8001)
-    which reads directly from trajectory folders.
-    """
+def _serialize_datetime(value):
+    if not value:
+        return None
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{RUN_TASK_API}/agent-responses")
-            response.raise_for_status()
-            return response.json()
-    except httpx.RequestError as e:
-        print(f"Error proxying to run_task API: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Unable to reach run_task API at {RUN_TASK_API}. Make sure run_task.py is running with --api flag."
-        )
-    except httpx.HTTPStatusError as e:
-        print(f"HTTP error from run_task API: {e}")
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+        return value.isoformat()
+    except AttributeError:
+        return value
 
 @app.post("/task")
 async def create_task(request: Request):
@@ -210,92 +138,195 @@ async def create_task(request: Request):
     except Exception as e:
         print(f"Error creating task: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/agent-screenshot/{agent_id}")
-async def get_agent_screenshot(agent_id: str):
-    """
-    Get the latest screenshot for an agent.
     
-    First tries to proxy to run_task.py (filesystem), then falls back to MinIO if configured.
-    """
-    # First, try to get from run_task.py (filesystem)
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{RUN_TASK_API}/agent-screenshot/{agent_id}",
-                follow_redirects=True
-            )
-            if response.status_code == 200:
-                # Stream the response back
-                return StreamingResponse(
-                    response.iter_bytes(),
-                    media_type="image/png",
-                    headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Pragma": "no-cache",
-                        "Expires": "0"
-                    }
-                )
-    except (httpx.RequestError, httpx.HTTPStatusError) as e:
-        print(f"run_task API unavailable or screenshot not found: {e}")
-        # Fall through to MinIO fallback
-    
-    # Fallback: Try MinIO (if configured)
-    response = None
-    try:
-        # Try different possible paths in MinIO
-        possible_paths = [
-            f"{agent_id}/screenshots/latest.png",  # agent1-cua/screenshots/latest.png
-            f"{agent_id}/latest.png",              # agent1-cua/latest.png
-            f"screenshots/{agent_id}/latest.png"    # screenshots/agent1-cua/latest.png
-        ]
-        
-        for object_path in possible_paths:
-            try:
-                # Get the object from MinIO
-                response = minio_client.get_object(BUCKET_NAME, object_path)
-                
-                # If we get here, the object was found
-                return StreamingResponse(
-                    response,
-                    media_type="image/png",
-                    headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Pragma": "no-cache",
-                        "Expires": "0"
-                    }
-                )
-                
-            except S3Error as e:
-                if e.code == "NoSuchKey":
-                    print(f"MinIO path not found: {object_path}")
-                    continue
-                print(f"MinIO error: {e}")
-                raise
-                
-        # If we get here, none of the paths worked
-        print(f"Screenshot not found for {agent_id} in MinIO. Tried paths: {possible_paths}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"Screenshot not found for {agent_id}. Checked filesystem (via run_task API) and MinIO."
-        )
-        
-    except Exception as e:
-        print(f"Error getting screenshot: {e}")
-        if not isinstance(e, HTTPException):
-            raise HTTPException(status_code=500, detail="Failed to get screenshot")
-        raise
-        
-    finally:
-        if response:
-            response.close()
-            response.release_conn()
+    return {"task_id": task_id, "status": "created"}
 
 @app.get("/tasks")
 async def get_tasks(agent_id: str = None, status: str = None, limit: int = 10):
     """Get tasks with optional filtering"""
     tasks = pg.get_tasks(agent_id=agent_id, status=status, limit=limit)
     return {"tasks": tasks}
+
+
+@app.get("/agents/live")
+async def get_agents_live(limit_per_agent: int = 3):
+    """Return aggregated live data for each agent."""
+
+    if limit_per_agent < 1:
+        limit_per_agent = 1
+
+    agents = {}
+
+    for agent_id in AGENT_URLS.keys():
+        agents[agent_id] = {
+            "agent_id": agent_id,
+            "screenshots": [],
+            "latest_progress": None,
+            "progress_updates": []
+        }
+
+    # Gather recent screenshot metadata
+    screenshot_limit = limit_per_agent * max(len(agents), 1) * 2
+    metadata_records = pg.get_binary_files(bucket="screenshots", limit=screenshot_limit)
+    metadata_by_path = {record.get("object_path"): record for record in metadata_records}
+
+    screenshot_objects = []
+    if MINIO_AVAILABLE and minio_adapter:
+        try:
+            screenshot_objects = minio_adapter.list_objects(
+                "screenshots",
+                limit=screenshot_limit * 2 or 50
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to list screenshots from MinIO: {e}")
+    else:
+        print("ℹ️  MinIO not available, falling back to metadata cache only")
+
+    if screenshot_objects:
+        from datetime import datetime as _dt
+
+        def _sort_key(obj):
+            last_modified = obj.get("last_modified")
+            if isinstance(last_modified, _dt):
+                return last_modified
+            return _dt.min
+
+        for obj in sorted(screenshot_objects, key=_sort_key, reverse=True):
+            object_path = obj.get("object_name")
+            if not object_path:
+                continue
+
+            agent_id = object_path.split("/", 1)[0] if "/" in object_path else object_path.split("-", 1)[0]
+            agent_id = agent_id or "unknown"
+
+            agent_entry = agents.setdefault(
+                agent_id,
+                {
+                    "agent_id": agent_id,
+                    "screenshots": [],
+                    "latest_progress": None,
+                    "progress_updates": []
+                }
+            )
+
+            if len(agent_entry["screenshots"]) >= limit_per_agent:
+                continue
+
+            metadata = metadata_by_path.get(object_path, {})
+
+            presigned_url = None
+            try:
+                presigned_url = minio_adapter.get_presigned_url(
+                    "screenshots",
+                    object_path,
+                    expires_seconds=300
+                )
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to generate presigned URL for {object_path}: {e}")
+
+            uploaded_at = metadata.get("uploaded_at")
+            if not uploaded_at:
+                uploaded_at = obj.get("last_modified")
+
+            agent_entry["screenshots"].append({
+                "object_path": object_path,
+                "url": presigned_url,
+                "task_id": metadata.get("task_id"),
+                "uploaded_at": _serialize_datetime(uploaded_at),
+                "metadata": metadata.get("metadata") or {},
+                "size_bytes": obj.get("size")
+            })
+    else:
+        for record in metadata_records:
+            agent_id = record.get("agent_id") or "unknown"
+            agent_entry = agents.setdefault(
+                agent_id,
+                {
+                    "agent_id": agent_id,
+                    "screenshots": [],
+                    "latest_progress": None,
+                    "progress_updates": []
+                }
+            )
+
+            if len(agent_entry["screenshots"]) >= limit_per_agent:
+                continue
+
+            agent_entry["screenshots"].append({
+                "object_path": record.get("object_path"),
+                "url": None,
+                "task_id": record.get("task_id"),
+                "uploaded_at": _serialize_datetime(record.get("uploaded_at")),
+                "metadata": record.get("metadata") or {}
+            })
+
+    # Gather recent progress updates
+    progress_limit = limit_per_agent * max(len(agents), 1) * 4
+    progress_records = pg.get_recent_progress(limit=progress_limit)
+
+    for update in progress_records:
+        agent_id = update.get("agent_id") or "unknown"
+        agent_entry = agents.setdefault(
+            agent_id,
+            {
+                "agent_id": agent_id,
+                "screenshots": [],
+                "latest_progress": None,
+                "progress_updates": []
+            }
+        )
+
+        progress_payload = {
+            "task_id": update.get("task_id"),
+            "message": update.get("message"),
+            "progress_percent": update.get("progress_percent"),
+            "timestamp": _serialize_datetime(update.get("timestamp")),
+            "data": update.get("data") or {}
+        }
+
+        if not agent_entry["latest_progress"]:
+            agent_entry["latest_progress"] = progress_payload
+
+        if len(agent_entry["progress_updates"]) < limit_per_agent:
+            agent_entry["progress_updates"].append(progress_payload)
+
+    # Sort agents alphabetically for deterministic responses
+    agent_list = sorted(agents.values(), key=lambda item: item["agent_id"])
+
+    return {
+        "agents": agent_list,
+        "generated_at": datetime.utcnow().isoformat(),
+        "minio_available": MINIO_AVAILABLE
+    }
+
+
+@app.get("/chat/agent-responses")
+async def get_agent_responses(limit: int = 50):
+    """Expose recent agent responses captured via progress updates."""
+
+    if limit < 1:
+        limit = 1
+    limit = min(limit, 200)
+
+    records = pg.get_recent_agent_messages(limit=limit)
+    messages = []
+
+    for record in records:
+        messages.append({
+            "id": record.get("id"),
+            "agent_id": record.get("agent_id"),
+            "task_id": record.get("task_id"),
+            "message": record.get("message"),
+            "progress_percent": record.get("progress_percent"),
+            "data": record.get("data") or {},
+            "timestamp": _serialize_datetime(record.get("timestamp")),
+            "task": record.get("task"),
+        })
+
+    return {
+        "messages": messages,
+        "generated_at": datetime.utcnow().isoformat()
+    }
 
 @app.get("/task/{task_id}")
 async def get_task(task_id: int):
