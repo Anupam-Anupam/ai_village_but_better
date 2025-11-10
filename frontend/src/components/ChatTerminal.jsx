@@ -1,81 +1,154 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { API_BASE, REFRESH_INTERVALS } from '../config';
 
-// Try to detect the API port dynamically, fallback to 8001
-const API_BASE = 'http://localhost:8000';
+const ensureDate = (value) => {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date();
+  }
+  return date;
+};
+
+const normalizePercent = (value) => {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, parsed));
+};
+
+const formatPercentLabel = (value) => {
+  const percent = normalizePercent(value);
+  if (percent === null) {
+    return null;
+  }
+  return `${percent.toFixed(0)}%`;
+};
+
+const buildAgentMessage = (record) => {
+  if (!record || record.id === undefined || record.id === null) {
+    return null;
+  }
+
+  const timestamp = ensureDate(record.timestamp);
+  const progressPercent = normalizePercent(record.progress_percent);
+  const text = (record.message && record.message.trim().length > 0)
+    ? record.message
+    : (progressPercent !== null
+      ? `Progress update: ${progressPercent.toFixed(0)}% complete.`
+      : 'Progress update received.');
+
+  return {
+    id: `agent-response-${record.id}`,
+    sender: 'agent',
+    agentId: record.agent_id || 'Agent',
+    text,
+    timestamp,
+    taskId: record.task_id ?? null,
+    progressPercent,
+    taskTitle: record.task?.title ?? null,
+    taskStatus: record.task?.status ?? null,
+  };
+};
+
+const formatTime = (date) => {
+  if (!date) {
+    return '—';
+  }
+  const safeDate = ensureDate(date);
+  return safeDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const getSenderLabel = (message) => {
+  if (message.sender === 'user') {
+    return 'You';
+  }
+  if (message.sender === 'system') {
+    return 'System';
+  }
+  return message.agentId || 'Agent';
+};
 
 const ChatTerminal = () => {
-  const [messages, setMessages] = useState([
-    { 
-      text: 'Hello! I\'m your AI assistant. How can I help you today?', 
-      sender: 'agent',
-      timestamp: new Date()
-    }
-  ]);
-  
+  const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(null);
   const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
-  const seenResponsesRef = useRef(new Set());
+  const abortRef = useRef(false);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const upsertMessages = useCallback((incoming = []) => {
+    if (!incoming.length) {
+      return;
+    }
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  // Poll for task updates
-  useEffect(() => {
-    const pollInterval = setInterval(async () => {
-      try {
-        // Get recent tasks
-        const response = await fetch(`${API_BASE}/tasks?limit=5`);
-        const data = await response.json();
-        
-        if (data.tasks && data.tasks.length > 0) {
-          // Process the most recent task
-          const latestTask = data.tasks[0];
-          
-          // Create a unique key for this task update
-          const taskKey = `task-${latestTask.id}-${latestTask.updated_at}`;
-          
-          if (!seenResponsesRef.current.has(taskKey)) {
-            seenResponsesRef.current.add(taskKey);
-            
-            // Add task update to messages
-            const taskMessage = {
-              id: `task-${latestTask.id}`,
-              text: `[Task ${latestTask.status}] ${latestTask.title}`,
-              sender: 'system',
-              timestamp: new Date(latestTask.updated_at),
-              taskId: latestTask.id
-            };
-            
-            setMessages(prev => {
-              // Check if this task update already exists
-              const exists = prev.some(msg => 
-                msg.id === taskMessage.id && 
-                msg.text === taskMessage.text
-              );
-              if (exists) return prev;
-              
-              // Replace previous message for this task if it exists
-              return [
-                ...prev.filter(msg => msg.id !== taskMessage.id),
-                taskMessage
-              ];
-            });
-          }
+    setMessages((prev) => {
+      const map = new Map(prev.map((msg) => [msg.id, msg]));
+      incoming.forEach((msg) => {
+        if (!msg || msg.id === undefined || msg.id === null) {
+          return;
         }
-      } catch (error) {
-        console.error('Error polling task updates:', error);
-      }
-    }, 3000); // Poll every 3 seconds
+        const timestamp = ensureDate(msg.timestamp);
+        map.set(msg.id, { ...msg, timestamp });
+      });
 
-    return () => clearInterval(pollInterval);
+      return Array.from(map.values()).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    });
   }, []);
+
+  const fetchAgentResponses = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/agent-responses?limit=60`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to load agent responses');
+      }
+
+      if (abortRef.current) {
+        return;
+      }
+
+      const normalized = (Array.isArray(data.messages) ? data.messages : [])
+        .map(buildAgentMessage)
+        .filter(Boolean);
+
+      if (normalized.length) {
+        upsertMessages(normalized);
+      }
+      setHistoryError(null);
+    } catch (error) {
+      if (abortRef.current) {
+        return;
+      }
+      console.error('Error loading agent responses:', error);
+      setHistoryError(error.message || 'Unable to load agent responses');
+    } finally {
+      if (!abortRef.current) {
+        setHistoryLoading(false);
+      }
+    }
+  }, [upsertMessages]);
+
+  useEffect(() => {
+    abortRef.current = false;
+
+    fetchAgentResponses();
+    const intervalId = setInterval(fetchAgentResponses, REFRESH_INTERVALS.chat);
+
+    return () => {
+      abortRef.current = true;
+      clearInterval(intervalId);
+    };
+  }, [fetchAgentResponses]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -83,31 +156,28 @@ const ChatTerminal = () => {
 
     const taskText = inputValue.trim();
 
-    // Add user message
     const userMessage = {
-      id: Date.now(),
-      text: taskText,
+      id: `user-${Date.now()}`,
       sender: 'user',
-      timestamp: new Date()
+      text: taskText,
+      timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    upsertMessages([userMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    // Add thinking message
     const thinkingMessage = {
-      id: Date.now() + 0.5,
-      text: 'Sending task to agents...',
-      sender: 'agent',
+      id: `thinking-${Date.now()}`,
+      sender: 'system',
+      text: 'Sending task to agents',
       timestamp: new Date(),
-      isThinking: true
+      isThinking: true,
     };
-    
-    setMessages(prev => [...prev, thinkingMessage]);
+
+    upsertMessages([thinkingMessage]);
 
     try {
-      // Create a new task via the API
       const response = await fetch(`${API_BASE}/task`, {
         method: 'POST',
         headers: {
@@ -118,173 +188,135 @@ const ChatTerminal = () => {
 
       const data = await response.json();
 
-      // Remove thinking message
-      setMessages(prev => prev.filter(msg => !msg.isThinking));
+      setMessages((prev) => prev.filter((msg) => !msg.isThinking));
 
       if (response.ok) {
-        // Add the task to the UI
         const taskMessage = {
           id: `task-${data.task_id}`,
-          text: `[Task created] ${taskText}`,
           sender: 'system',
+          text: `[Task created] ${taskText}`,
           timestamp: new Date(),
-          taskId: data.task_id
+          taskId: data.task_id,
         };
-        
-        setMessages(prev => [...prev, taskMessage]);
+        upsertMessages([taskMessage]);
+        fetchAgentResponses();
       } else {
         throw new Error(data.detail || 'Failed to create task');
       }
     } catch (error) {
-      // Remove thinking message
-      setMessages(prev => prev.filter(msg => !msg.isThinking));
-      
-      // Add error message
+      setMessages((prev) => prev.filter((msg) => !msg.isThinking));
+
       const errorMessage = {
-        id: Date.now() + 1,
+        id: `error-${Date.now()}`,
+        sender: 'system',
         text: `Error: ${error.message}`,
-        sender: 'agent',
         timestamp: new Date(),
-        isError: true
+        isError: true,
       };
-      setMessages(prev => [...prev, errorMessage]);
+      upsertMessages([errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const formatTime = (date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      backgroundColor: 'rgba(10, 25, 47, 0.8)',
-      borderRadius: '12px',
-      border: '1px solid rgba(100, 255, 218, 0.2)',
-      overflow: 'hidden',
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)'
-    }}>
-      <div style={{
-        padding: '15px 20px',
-        backgroundColor: 'rgba(10, 25, 47, 0.9)',
-        borderBottom: '1px solid rgba(100, 255, 218, 0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-      }}>
-        <div style={{ color: '#64ffda', fontWeight: 'bold', fontSize: '1.1rem' }}>
-          AI Village Task Runner
+    <div className="chat-terminal">
+      <header className="chat-terminal__header">
+        <div>
+          <div className="chat-terminal__title">Agent Playground</div>
+          <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
         </div>
-      </div>
-      
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '15px'
-      }}>
-        {messages.map((message) => (
-          <div 
-            key={message.id} 
-            style={{
-              padding: '12px 16px',
-              borderRadius: '8px',
-              backgroundColor: message.sender === 'user' 
-                ? 'rgba(30, 144, 255, 0.1)' 
-                : 'rgba(100, 255, 218, 0.1)',
-              borderLeft: `3px solid ${message.sender === 'user' ? '#1e90ff' : '#64ffda'}`,
-              color: message.sender === 'user' ? '#1e90ff' : '#64ffda'
-            }}
-          >
-            <div style={{ 
-              fontSize: '0.85rem', 
-              marginBottom: '8px',
-              opacity: 0.8,
-              display: 'flex',
-              justifyContent: 'space-between'
-            }}>
-              <span style={{ fontWeight: 'bold' }}>
-                {message.sender === 'user' ? 'You' : 'AI Assistant'}
-              </span>
-              {!message.isThinking && (
-                <span>{formatTime(message.timestamp)}</span>
-              )}
-            </div>
-            <div style={{ fontSize: '0.95rem', wordBreak: 'break-word' }}>
-              {message.text}
-              {message.isThinking && (
-                <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
-                  <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
-                  <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
-                  <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
+      </header>
+
+      <div className="chat-terminal__messages">
+        {historyLoading && (
+          <div className="chat-message chat-message--system">
+            <div className="chat-message__text">Loading conversation…</div>
+          </div>
+        )}
+
+        {!historyLoading && messages.length === 0 && !historyError && (
+          <div className="chat-message chat-message--system">
+            <div className="chat-message__text">Say hello! Agent responses will appear here as they make progress.</div>
+          </div>
+        )}
+
+        {historyError && (
+          <div className="chat-message chat-message--error">
+            <div className="chat-message__text">{historyError}</div>
+          </div>
+        )}
+
+        {messages.map((message) => {
+          const classes = ['chat-message'];
+          if (message.sender === 'user') {
+            classes.push('chat-message--user');
+          } else if (message.sender === 'system') {
+            classes.push('chat-message--system');
+          } else {
+            classes.push('chat-message--agent');
+          }
+          if (message.isError) {
+            classes.push('chat-message--error');
+          }
+
+          return (
+            <div key={message.id} className={classes.join(' ')}>
+              <div className="chat-message__top">
+                <span className="chat-message__sender">{getSenderLabel(message)}</span>
+                {!message.isThinking && (
+                  <span className="chat-message__time">{formatTime(message.timestamp)}</span>
+                )}
+              </div>
+              <div className="chat-message__text">
+                {message.text}
+                {message.isThinking && (
+                  <span className="chat-message__thinking" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                )}
+              </div>
+              {!message.isThinking && formatPercentLabel(message.progressPercent) && (
+                <span className="chat-message__progress">
+                  {formatPercentLabel(message.progressPercent)}
                 </span>
               )}
+              {(message.taskId || message.taskTitle || message.taskStatus) && (
+                <div className="chat-message__tags">
+                  {message.taskId && <span>Task #{message.taskId}</span>}
+                  {message.taskTitle && <span>{message.taskTitle}</span>}
+                  {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
-      
-      <form onSubmit={handleSubmit} style={{
-        padding: '15px',
-        backgroundColor: 'rgba(10, 25, 47, 0.9)',
-        borderTop: '1px solid rgba(100, 255, 218, 0.2)',
-        display: 'flex',
-        gap: '10px'
-      }}>
+
+      <form className="chat-terminal__form" onSubmit={handleSubmit}>
         <input
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Enter a task for the CUA agents..."
+          placeholder="Enter a joyful mission for the agents…"
           disabled={isLoading}
-          autoFocus
-          style={{
-            flex: 1,
-            padding: '12px 15px',
-            backgroundColor: 'rgba(10, 25, 47, 0.8)',
-            border: '1px solid rgba(100, 255, 218, 0.2)',
-            borderRadius: '8px',
-            color: '#ccd6f6',
-            fontSize: '0.95rem',
-            outline: 'none'
-          }}
+          className="chat-terminal__input"
         />
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={!inputValue.trim() || isLoading}
-          style={{
-            padding: '12px 20px',
-            backgroundColor: isLoading ? '#444' : '#64ffda',
-            color: '#0a192f',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: isLoading || !inputValue.trim() ? 'not-allowed' : 'pointer',
-            fontWeight: 'bold',
-            fontSize: '0.95rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}
+          className="chat-terminal__send"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
+          Send
         </button>
       </form>
-      <style>{`
-        @keyframes blink {
-          0%, 100% { opacity: 0; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 };
