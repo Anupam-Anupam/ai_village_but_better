@@ -464,13 +464,15 @@ body {
   }
 }
 
-.terminal-header {
-  background-color: var(--terminal-header);
-  padding: 10px 15px;
+.agent-card__shot-placeholder {
+  flex: 1;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid var(--terminal-border);
-  position: relative;
+  justify-content: center;
+  color: var(--lighter-text);
+  font-size: 0.9rem;
+  padding: 18px;
+  text-align: center;
 }
 
 .agent-card__header {
