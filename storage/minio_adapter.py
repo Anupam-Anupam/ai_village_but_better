@@ -44,10 +44,12 @@ class MinIOAdapter:
             access_key: MinIO access key. If None, uses MINIO_ACCESS_KEY env var.
             secret_key: MinIO secret key. If None, uses MINIO_SECRET_KEY env var.
             secure: Use HTTPS (True) or HTTP (False). If None, auto-detects based on endpoint.
-            agent_id: Agent identifier for namespace isolation
+            agent_id: Agent identifier for namespace isolation (e.g., 'agent1-cua' -> 'agent1')
             postgres_adapter: PostgreSQL adapter for metadata storage
         """
-        self.agent_id = agent_id or os.getenv("AGENT_ID", "agent1")
+        raw_agent_id = agent_id or os.getenv("AGENT_ID", "agent1")
+        # Normalize agent_id to format: agent{ID} (e.g., 'agent1-cua' -> 'agent1', 'agent1' -> 'agent1')
+        self.agent_id = self._normalize_agent_id(raw_agent_id)
         
         # Get MinIO credentials from environment
         self.endpoint = endpoint or os.getenv("MINIO_ENDPOINT", "localhost:9000")
@@ -90,6 +92,42 @@ class MinIOAdapter:
         
         # Initialize buckets
         self._init_buckets()
+    
+    def _normalize_agent_id(self, agent_id: str) -> str:
+        """
+        Normalize agent_id to format: agent{ID}
+        
+        Examples:
+            'agent1-cua' -> 'agent1'
+            'agent2-cua' -> 'agent2'
+            'agent1' -> 'agent1'
+            'agent1' -> 'agent1'
+            '1' -> 'agent1'
+            'cua_agent' -> 'agent1' (fallback)
+        
+        Args:
+            agent_id: Raw agent identifier
+            
+        Returns:
+            Normalized agent_id in format 'agent{ID}'
+        """
+        import re
+        
+        # Extract numeric part from agent_id
+        # Match patterns like: agent1, agent1-cua, agent2-cua, etc.
+        match = re.search(r'agent(\d+)', agent_id, re.IGNORECASE)
+        if match:
+            agent_num = match.group(1)
+            return f"agent{agent_num}"
+        
+        # If no match, try to extract just a number
+        match = re.search(r'(\d+)', agent_id)
+        if match:
+            agent_num = match.group(1)
+            return f"agent{agent_num}"
+        
+        # Fallback: use default
+        return "agent1"
     
     def _init_buckets(self):
         """Create buckets if they don't exist."""

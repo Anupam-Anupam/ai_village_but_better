@@ -3,6 +3,7 @@ import logging
 import os
 import traceback
 import signal
+from datetime import datetime
 
 from computer import Computer, VMProviderType
 
@@ -44,6 +45,175 @@ def validate_required_env_vars():
             f"Missing required environment variables: {', '.join(missing_keys)}. "
             f"Please check your .env file and ensure all keys from .env.example are set."
         )
+
+
+async def _poll_and_process_tasks(agent, storage_adapters: dict, agent_id: str, poll_interval: float = 5.0):
+    """
+    Poll Postgres for tasks assigned to this agent and process them.
+    - Expects pg adapter methods: get_tasks(agent_id=..., status=..., limit=...), update_task_status(...), add_progress_update(...)
+    - Expects mongo adapter method: write_log(level, message, task_id, metadata)
+    """
+    pg_adapter = storage_adapters.get("pg") if storage_adapters else None
+    mongo_adapter = storage_adapters.get("mongo") if storage_adapters else None
+    minio_adapter = storage_adapters.get("minio") if storage_adapters else None
+
+    if not pg_adapter:
+        print("⚠️  Poller disabled: Postgres adapter not available")
+        return
+
+    print(f"🔁 Starting task poller for agent '{agent_id}', interval={poll_interval}s")
+    while True:
+        try:
+            # Fetch tasks assigned to this agent that are pending/assigned
+            tasks = []
+            try:
+                tasks = pg_adapter.get_tasks(agent_id=agent_id, status="assigned", limit=10) or []
+            except Exception:
+                # fallback: try pending
+                try:
+                    tasks = pg_adapter.get_tasks(agent_id=agent_id, status="pending", limit=10) or []
+                except Exception:
+                    tasks = []
+
+            for t in tasks:
+                # Normalize task id and description
+                task_id = t.get("id") or t.get("task_id") or t.get("taskId") or t.get("_id")
+                description = t.get("description") or t.get("title") or ""
+                if not task_id or not description:
+                    continue
+
+                # Avoid double-processing: check status again
+                current = pg_adapter.get_task(task_id) if hasattr(pg_adapter, "get_task") else None
+                cur_status = (current.get("status") if current else t.get("status")) or ""
+                if cur_status in ("in_progress", "completed"):
+                    continue
+
+                # Mark as in_progress
+                try:
+                    pg_adapter.update_task_status(
+                        task_id=task_id,
+                        status="in_progress",
+                        metadata={"started_at": datetime.utcnow().isoformat(), "agent_id": agent_id}
+                    )
+                except Exception as e:
+                    print(f"⚠️  Failed to mark task {task_id} in_progress: {e}")
+
+                # Add a progress update
+                try:
+                    pg_adapter.add_progress_update(
+                        task_id=task_id,
+                        agent_id=agent_id,
+                        progress_percent=1,
+                        message="Agent picked up task",
+                        data={"description": description}
+                    )
+                except Exception:
+                    pass
+
+                # Run the agent on the task (message-based history)
+                history = [{"role": "user", "content": description}]
+                collected_texts = []
+                try:
+                    async for result in agent.run(history, stream=False):
+                        output_items = result.get("output", []) or []
+                        # Process outputs and log them
+                        for item in output_items:
+                            itype = item.get("type", "")
+                            if itype == "message":
+                                content_parts = item.get("content", []) or []
+                                for cp in content_parts:
+                                    text = cp.get("text") if isinstance(cp, dict) else None
+                                    if text:
+                                        collected_texts.append(text)
+                                        # Log message to MongoDB if available
+                                        try:
+                                            if mongo_adapter:
+                                                mongo_adapter.write_log(
+                                                    level="info",
+                                                    message=text[:1000],
+                                                    task_id=str(task_id),
+                                                    metadata={"agent_id": agent_id, "output_type": "message"}
+                                                )
+                                        except Exception:
+                                            pass
+                            elif itype == "computer_call" and mongo_adapter:
+                                # store a short log about the action
+                                try:
+                                    mongo_adapter.write_log(
+                                        level="info",
+                                        message=f"computer_call: {item.get('action', {}).get('type', '')}"[:1000],
+                                        task_id=str(task_id),
+                                        metadata={"agent_id": agent_id, "action": item.get("action", {})}
+                                    )
+                                except Exception:
+                                    pass
+
+                        # Periodic progress update
+                        try:
+                            pg_adapter.add_progress_update(
+                                task_id=task_id,
+                                agent_id=agent_id,
+                                progress_percent=50,
+                                message="Agent produced partial output",
+                                data={"partial_outputs": len(collected_texts)}
+                            )
+                        except Exception:
+                            pass
+
+                    # After streaming completes, assemble final response
+                    final_response = "\n\n".join(collected_texts).strip() if collected_texts else "(no textual output)"
+                except Exception as e:
+                    # Mark failed and log
+                    final_response = None
+                    err_text = str(e)
+                    try:
+                        pg_adapter.update_task_status(
+                            task_id=task_id,
+                            status="failed",
+                            metadata={"error": err_text, "failed_at": datetime.utcnow().isoformat(), "agent_id": agent_id}
+                        )
+                        pg_adapter.add_progress_update(
+                            task_id=task_id,
+                            agent_id=agent_id,
+                            progress_percent=100,
+                            message=f"Task failed: {err_text}",
+                            data={"error": err_text}
+                        )
+                        if mongo_adapter:
+                            mongo_adapter.write_log(level="error", message=f"Task failed: {err_text}", task_id=str(task_id), metadata={"agent_id": agent_id})
+                    except Exception:
+                        pass
+                    print(f"❌ Error executing task {task_id}: {err_text}")
+                    continue
+
+                # Persist final result and mark completed
+                try:
+                    result_meta = {
+                        "response_text": final_response,
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "agent_id": agent_id,
+                        "processing_method": "cua_agent_poll"
+                    }
+                    pg_adapter.update_task_status(
+                        task_id=task_id,
+                        status="completed",
+                        metadata={"result": result_meta, "completed_at": result_meta["completed_at"]}
+                    )
+                    pg_adapter.add_progress_update(
+                        task_id=task_id,
+                        agent_id=agent_id,
+                        progress_percent=100,
+                        message="Task completed",
+                        data={"result": result_meta}
+                    )
+                    if mongo_adapter:
+                        mongo_adapter.write_log(level="info", message=f"Task completed: {final_response[:1000]}", task_id=str(task_id), metadata={"agent_id": agent_id})
+                except Exception as e:
+                    print(f"⚠️  Failed to persist completion for task {task_id}: {e}")
+
+        except Exception as e:
+            print(f"⚠️  Poller error: {e}")
+        await asyncio.sleep(poll_interval)
 
 
 async def run_agent_example():
@@ -96,6 +266,12 @@ async def run_agent_example():
         else:
             print("\n⚠ Storage integration not available")
         
+        # Start background poller only when Postgres adapter exists
+        if storage_adapters and storage_adapters.get("pg"):
+            # spawn the poller but don't block the example main flow
+            asyncio.create_task(_poll_and_process_tasks(agent, storage_adapters, agent_id, poll_interval=float(os.getenv("TASK_POLL_INTERVAL", "5.0"))))
+            print("🔁 Task poller started in background")
+
         # Use message-based conversation history
         history = []
         

@@ -155,6 +155,7 @@ const ChatTerminal = () => {
     if (!inputValue.trim() || isLoading) return;
 
     const taskText = inputValue.trim();
+    const taskTimestamp = new Date();
 
     const userMessage = {
       id: `user-${Date.now()}`,
@@ -180,12 +181,9 @@ const ChatTerminal = () => {
     try {
       const response = await fetch(`${API_BASE}/task`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text: taskText }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: taskText, timestamp: taskTimestamp.toISOString() }),
       });
-
       const data = await response.json();
 
       setMessages((prev) => prev.filter((msg) => !msg.isThinking));
