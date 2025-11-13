@@ -6,8 +6,10 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from adapters.mongo_adapter import MongoAdapter
-from adapters.postgres_adapter import PostgresAdapter
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from storage import MongoAdapter, PostgresAdapter
 from modules.data_collector import DataCollector
 from modules.scoring_engine import ScoringEngine
 from modules.llm_interface import LLMInterface

@@ -42,16 +42,13 @@ RUN mkdir -p /app/screenshots && chmod 777 /app/screenshots
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy base requirements first (for better caching)
-COPY agents/agent1/agent_worker/requirements-base.txt /app/requirements-base.txt
+COPY agents/agent3/agent_worker/requirements-base.txt /app/requirements-base.txt
 RUN pip install --no-cache-dir -r /app/requirements-base.txt
 
 # Install Playwright browsers (required for screenshot functionality)
 RUN playwright install chromium && playwright install-deps chromium
 
-# Install CUA packages separately with longer timeout
-# These packages are large and may take time to download/install
-COPY agents/agent1/agent_worker/requirements-cua.txt /app/requirements-cua.txt
-RUN pip install --no-cache-dir --default-timeout=600 -r /app/requirements-cua.txt
+
 
 # Verify CUA packages are installed
 RUN pip list | grep -i cua || echo "Warning: CUA packages not found in pip list"
@@ -67,8 +64,7 @@ RUN python -c "from agent import ComputerAgent; from computer import Computer; p
     (echo "ERROR: Failed to import CUA packages after patching" && exit 1)
 
 # Copy agent worker code
-COPY agents/agent1/agent_worker/ /app/agent_worker/
-COPY run_task.py /app/run_task.py
+COPY agents/agent3/agent_worker/ /app/agent_worker/
 
 # Copy CUA directory (for task execution)
 COPY CUA/ /app/CUA/
@@ -80,4 +76,4 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DISPLAY=:99
 
 # Run the agent worker
-CMD ["python", "-m", "agent_worker.main"]
+CMD ["python", "-m", "agent_worker.execute_task"]

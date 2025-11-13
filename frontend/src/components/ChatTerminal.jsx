@@ -224,7 +224,7 @@ const ChatTerminal = () => {
           <div className="chat-terminal__title">Agent Playground</div>
           <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
         </div>
-      </div>
+      </header>
 
       <div style={{
         flex: 1,

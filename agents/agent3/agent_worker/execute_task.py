@@ -289,13 +289,7 @@ def get_task_description():
         # Get from environment variable
         task_description = os.getenv("TASK_DESCRIPTION", "")
     
-    if not task_description:
-        print("ERROR: No task description provided")
-        print("Usage: python execute_task.py 'task description'")
-        print("   or: TASK_DESCRIPTION='task description' python execute_task.py")
-        sys.exit(1)
-    
-    return task_description
+    return task_description  # Return empty string if not provided (for polling mode)
 
 
 async def execute_task_async(task_description: str) -> dict:
@@ -628,6 +622,45 @@ def main():
     """Main entry point."""
     task_description = get_task_description()
     
+    # If no task description provided, run in polling mode using runner
+    if not task_description:
+        try:
+            from .config import Config
+            from .db_adapters import PostgresClient, MongoClientWrapper
+            from .storage import MinioClientWrapper
+            from .runner import AgentRunner
+            
+            # Load configuration and start polling loop
+            config = Config.from_env()
+            postgres = PostgresClient(config.postgres_dsn)
+            mongo = MongoClientWrapper(config.mongo_uri, config.agent_id)
+            minio = MinioClientWrapper(
+                endpoint=config.minio_endpoint,
+                access_key=config.minio_access_key,
+                secret_key=config.minio_secret_key,
+                secure=config.minio_secure,
+                agent_id=config.agent_id
+            )
+            
+            runner = AgentRunner(
+                config=config,
+                postgres_client=postgres,
+                mongo_client=mongo,
+                minio_client=minio
+            )
+            
+            runner.poll_loop()
+        except KeyboardInterrupt:
+            print("\nShutting down agent worker...")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Fatal error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        return
+    
+    # Single task execution mode
     print("=" * 60)
     print("AGENT WORKER TASK EXECUTOR")
     print("=" * 60)

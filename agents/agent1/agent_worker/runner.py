@@ -1,5 +1,5 @@
 # Agent runner: orchestrates task polling, execution, and progress tracking
-"""Agent runner that polls for tasks and executes run_task.py."""
+"""Agent runner that polls for tasks and executes them using execute_task.py."""
 
 import os
 import subprocess
@@ -111,7 +111,7 @@ class AgentRunner:
     
     def _execute_task(self, task: dict):
         """
-        Execute a task by running run_task.py.
+        Execute a task using execute_task.py.
         
         Args:
             task: Task dictionary from database
@@ -154,38 +154,6 @@ class AgentRunner:
             if screenshots_dir.exists():
                 screenshots_before = {f.name for f in screenshots_dir.iterdir() if f.is_file()}
             
-            # Find run_task.py script
-            
-            # Look for run_task.py in various locations
-            run_task_script = None
-            possible_paths = [
-                Path("run_task.py"),  # Current directory
-                Path("../run_task.py"),  # Parent directory
-                Path(__file__).parent.parent / "run_task.py",  # Agent directory
-                Path(__file__).parent.parent.parent / "run_task.py",  # Project root
-            ]
-            
-            for path in possible_paths:
-                if path.exists() and path.is_file():
-                    run_task_script = path.resolve()
-                    break
-            
-            if not run_task_script:
-                error_msg = "run_task.py not found in any expected location"
-                print(f"[{self.config.agent_id}] ERROR: {error_msg}")
-                self.mongo.write_log(
-                    task_id=task_id,
-                    level="error",
-                    message=error_msg
-                )
-                self.postgres.insert_progress(
-                    task_id=task_id,
-                    agent_id=self.config.agent_id,
-                    percent=0,
-                    message=error_msg
-                )
-                return
-            
             # Start heartbeat thread for progress updates
             heartbeat_stop = threading.Event()
             heartbeat_thread = threading.Thread(
@@ -201,11 +169,13 @@ class AgentRunner:
                 task_description = f"Task {task_id}"
             
             # Execute task using execute_task.py script
-            # First, try to find execute_task.py in the agent_worker directory
             execute_task_script = Path(__file__).parent / "execute_task.py"
             if not execute_task_script.exists():
-                # Fallback to run_task.py if execute_task.py doesn't exist
-                execute_task_script = run_task_script
+                error_msg = f"execute_task.py not found at {execute_task_script}"
+                print(f"[{self.config.agent_id}] ERROR: {error_msg}")
+                self.mongo.write_log(task_id=task_id, level="error", message=error_msg)
+                self.postgres.insert_progress(task_id=task_id, agent_id=self.config.agent_id, percent=0, message=error_msg)
+                return
             
             start_time = time.time()
             try:
@@ -237,7 +207,7 @@ class AgentRunner:
                 self.mongo.write_log(
                     task_id=task_id,
                     level="info" if return_code == 0 else "error",
-                    message=f"run_task.py completed (return_code={return_code}, duration={duration:.2f}s)",
+                    message=f"execute_task.py completed (return_code={return_code}, duration={duration:.2f}s)",
                     meta={
                         "return_code": return_code,
                         "duration": duration,
@@ -251,14 +221,14 @@ class AgentRunner:
                     self.mongo.write_log(
                         task_id=task_id,
                         level="info",
-                        message="run_task.py stdout",
+                        message="execute_task.py stdout",
                         meta={"stdout": stdout}
                     )
                 if stderr:
                     self.mongo.write_log(
                         task_id=task_id,
                         level="warning" if return_code == 0 else "error",
-                        message="run_task.py stderr",
+                        message="execute_task.py stderr",
                         meta={"stderr": stderr}
                     )
                 
@@ -418,7 +388,7 @@ class AgentRunner:
                 heartbeat_stop.set()
                 heartbeat_thread.join(timeout=1)
                 
-                error_msg = f"run_task.py timed out after {self.config.run_task_timeout_seconds} seconds"
+                error_msg = f"execute_task.py timed out after {self.config.run_task_timeout_seconds} seconds"
                 print(f"[{self.config.agent_id}] ERROR: {error_msg}")
                 self.mongo.write_log(
                     task_id=task_id,

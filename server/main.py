@@ -6,9 +6,11 @@ Uses PostgreSQL for task management and MongoDB for logs.
 """
 
 import os
+import sys
 import json
 import httpx
 import asyncio
+import traceback
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -16,13 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, Optional, List, Union
 from pymongo import MongoClient
 
+# Add project root to path so we can import storage and CUA
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent / 'CUA'))
+
 # Import storage adapters
 from storage.postgres_adapter import PostgresAdapter
 from storage.mongo_adapter import MongoAdapter
-
-# Add CUA to path
-import sys
-sys.path.append(str(Path(__file__).parent.parent / 'CUA'))
+from storage.minio_adapter import MinIOAdapter
 
 # Import CUA components
 CUA_AVAILABLE = False
@@ -40,13 +43,6 @@ try:
 except ImportError as e:
     print(f"⚠️  Could not import CUA components: {e}")
 
-# Import storage adapters
-try:
-    from storage import PostgresAdapter
-except ImportError as e:
-    print(f"⚠️  Could not import storage adapters: {e}")
-    raise
-
 app = FastAPI()
 
 # Configure CORS
@@ -59,7 +55,12 @@ app.add_middleware(
 )
 
 # Initialize PostgreSQL
-pg = PostgresAdapter()
+# Use localhost:5433 for local development, postgres:5432 for Docker
+postgres_url = os.getenv(
+    "POSTGRES_URL",
+    "postgresql://hub:hubpassword@localhost:5433/hub"  # Default to localhost for local dev
+)
+pg = PostgresAdapter(connection_string=postgres_url)
 
 # Initialize MinIO adapter for generating screenshot URLs
 try:
@@ -72,8 +73,11 @@ except Exception as e:
 
 # MongoDB connection for logs
 try:
-    # Use the service name fr   om docker-compose
-    mongo_uri = "mongodb://admin:password@mongodb:27017/serverdb?authSource=admin"
+    # Use localhost for local dev, mongodb for Docker
+    mongo_uri = os.getenv(
+        "MONGODB_URL",
+        "mongodb://admin:password@localhost:27017/serverdb?authSource=admin"
+    )
     mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
     mongo_client.server_info()  # Force a connection test
     server_db = mongo_client.serverdb
@@ -81,7 +85,7 @@ try:
     print(f"Connection URL: {mongo_uri}")
 except Exception as e:
     print(f"❌ Failed to connect to MongoDB: {e}")
-    print("Make sure MongoDB service is running and accessible at mongodb:27017")
+    print("Make sure MongoDB service is running and accessible")
     server_db = None
 
 # Agent configurations
@@ -90,6 +94,7 @@ AGENTS = [
     {"id": "agent2-cua", "url": "http://host.docker.internal:8002/execute"},
     {"id": "agent3-cua", "url": "http://host.docker.internal:8003/execute"}
 ]
+AGENT_IDS = [agent["id"] for agent in AGENTS]
 
 # Initialize CUA agent instances
 cua_agents = {}
@@ -115,21 +120,14 @@ if CUA_AVAILABLE:
                         print(f"⚠️  Failed to initialize storage: {str(storage_error)}")
                 
                 # Create agent instance
+                # Note: ComputerAgent requires 'model' and 'tools' parameters
+                # We skip initialization here since agents run independently via agent_worker
+                # This initialization is optional and mainly for testing
                 if 'ComputerAgent' in globals():
-                    print("Creating ComputerAgent instance...")
-                    try:
-                        cua_agent = ComputerAgent(
-                            agent_id=agent_id,
-                            storage=storage or None
-                        )
-                        cua_agents[agent_id] = {
-                            "agent": cua_agent,
-                            "storage": storage
-                        }
-                        print(f"✅ Successfully initialized CUA agent: {agent_id}")
-                    except Exception as agent_error:
-                        print(f"❌ Failed to create ComputerAgent: {str(agent_error)}")
-                        raise
+                    print("⚠️  ComputerAgent initialization skipped - agents run via agent_worker")
+                    print("    ComputerAgent requires 'model' and 'tools' parameters")
+                    # Don't initialize here - agents are managed by agent_worker processes
+                    continue
                 else:
                     print("⚠️  ComputerAgent class not found in globals()")
                     print("Available globals:", ", ".join([g for g in globals() if not g.startswith('__')]))
@@ -177,178 +175,6 @@ if CUA_AVAILABLE:
 else:
     print("⚠️  CUA components not available, falling back to simple task processing")
 
-# Add project root so we can import run_task.py
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-try:
-    import run_task
-    RUN_TASK_AVAILABLE = True
-    print("✅ run_task module available")
-except Exception as e:
-    RUN_TASK_AVAILABLE = False
-    print(f"⚠️ run_task import failed: {e}")
-
-async def run_task_script(task_text: str, agent_id: str):
-    """Run the task using the run_task.py script"""
-    try:
-        # Import the run_task module
-        import sys
-        from pathlib import Path
-        import asyncio
-        
-        # Add the project root to the Python path
-        project_root = Path(__file__).parent.parent
-        sys.path.insert(0, str(project_root))
-        
-        # Import the run_task module
-        import run_task
-        
-        # Write the task to the shared tasks file
-        run_task.write_task_to_file(task_text)
-        
-        # Start the agent if not already running
-        run_task.start_agent(agent_id)
-        
-        # Return a simple response since we're running asynchronously
-        return {
-            "status": "started",
-            "message": f"Task submitted to {agent_id}",
-            "execution_time": 0
-        }
-        
-    except Exception as e:
-        print(f"Error running task: {str(e)}")
-        print("Traceback:", traceback.format_exc())
-        return {
-            "status": "error",
-            "error": str(e),
-            "execution_time": 0
-        }
-
-async def run_task_and_wait_for_response(task_text: str, agent_id: str, timeout: int = 30):
-    """
-    Use run_task utilities to write the task and optionally start agent,
-    then poll for a matching agent response. Returns the agent text or raises.
-    """
-    if not RUN_TASK_AVAILABLE:
-        raise RuntimeError("run_task module not available")
-
-    # write task for agents to pick up
-    try:
-        run_task.write_task_to_file(task_text)
-    except Exception as e:
-        raise RuntimeError(f"failed to write task file: {e}")
-
-    # ensure agent process started (best-effort; in containerized setups agents may be separate)
-    try:
-        run_task.start_agent(agent_id)
-    except Exception:
-        # non-fatal: start_agent is best-effort
-        pass
-
-    # initial snapshot timestamps for this agent
-    snapshot = run_task.get_agent_responses()
-    initial_ts = 0
-    agent_list = snapshot.get(agent_id, [])
-    if agent_list:
-        initial_ts = max(r.get("timestamp", 0) for r in agent_list)
-
-    # poll until we see a newer response
-    import time
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            responses = run_task.get_agent_responses()
-            agent_resps = responses.get(agent_id, [])
-            # find the first response newer than initial_ts
-            for r in agent_resps:
-                ts = r.get("timestamp", 0)
-                text = r.get("text", "")
-                if ts and ts > initial_ts and text:
-                    return {"text": text, "file": r.get("file"), "timestamp": ts}
-        except Exception:
-            pass
-        await asyncio.sleep(1)
-    raise TimeoutError("no agent response within timeout")
-
-async def process_task_with_cua(task_id: int, task_text: str, agent_id: str):
-    """Process a task using run_task.py routing and store the real agent response."""
-    print(f"\n=== Processing task {task_id} with agent {agent_id} ===")
-    try:
-        # mark in_progress
-        pg.update_task_status(
-            task_id=task_id,
-            status="in_progress",
-            metadata={"started_at": datetime.utcnow().isoformat()}
-        )
-
-        # Use run_task to submit and wait for the agent response
-        try:
-            resp = await run_task_and_wait_for_response(task_text, agent_id, timeout=30)
-        except TimeoutError as te:
-            pg.update_task_status(
-                task_id=task_id,
-                status="failed",
-                metadata={"error": "agent timeout", "failed_at": datetime.utcnow().isoformat()}
-            )
-            pg.add_progress_update(
-                task_id=task_id,
-                agent_id=agent_id,
-                progress_percent=100,
-                message=f"Task failed: no response from {agent_id} within timeout",
-                data={"error": str(te)}
-            )
-            print(f"Task {task_id} timed out waiting for agent response")
-            return
-
-        # Persist the actual agent response as result and mark completed
-        result_payload = {
-            "status": "ok",
-            "response_text": resp.get("text"),
-            "file": resp.get("file"),
-            "timestamp": datetime.utcfromtimestamp(resp.get("timestamp")).isoformat() if resp.get("timestamp") else datetime.utcnow().isoformat()
-        }
-
-        pg.update_task_status(
-            task_id=task_id,
-            status="completed",
-            metadata={
-                "completed_at": datetime.utcnow().isoformat(),
-                "result": result_payload,
-                "agent_used": agent_id,
-                "processing_method": "run_task_routing"
-            }
-        )
-
-        # Add a final progress update with the response
-        pg.add_progress_update(
-            task_id=task_id,
-            agent_id=agent_id,
-            progress_percent=100,
-            message=f"Agent response: {result_payload['response_text']}",
-            data=result_payload
-        )
-
-        print(f"Task {task_id} completed; stored agent response")
-        return
-
-    except Exception as e:
-        print(f"❌ Task processing failed for task {task_id}: {e}")
-        pg.update_task_status(
-            task_id=task_id,
-            status="failed",
-            metadata={"error": str(e), "failed_at": datetime.utcnow().isoformat()}
-        )
-        pg.add_progress_update(
-            task_id=task_id,
-            agent_id=agent_id,
-            progress_percent=100,
-            message=f"Task failed: {str(e)}",
-            data={"error": str(e)}
-        )
-        return
 
 @app.post("/task")
 async def create_task(request: Request, background_tasks: BackgroundTasks):
@@ -427,6 +253,15 @@ async def get_tasks(agent_id: str = None, status: str = None, limit: int = 10):
     return {"tasks": tasks}
 
 
+def _serialize_datetime(dt):
+    """Serialize datetime object to ISO format string, handling None."""
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        return dt.isoformat()
+    return dt
+
+
 @app.get("/agents/live")
 async def get_agents_live(limit_per_agent: int = 3):
     """Return aggregated live data for each agent."""
@@ -436,7 +271,7 @@ async def get_agents_live(limit_per_agent: int = 3):
 
     agents = {}
 
-    for agent_id in AGENT_URLS.keys():
+    for agent_id in AGENT_IDS:
         agents[agent_id] = {
             "agent_id": agent_id,
             "screenshots": [],
@@ -589,18 +424,44 @@ async def get_agent_responses(limit: int = 50):
 
     records = pg.get_recent_agent_messages(limit=limit)
     messages = []
+    
+    # Track which (task_id, agent_id) combinations we've already included to avoid duplicates
+    seen_combinations = set()
 
     for record in records:
-        messages.append({
-            "id": record.get("id"),
-            "agent_id": record.get("agent_id"),
-            "task_id": record.get("task_id"),
-            "message": record.get("message"),
-            "progress_percent": record.get("progress_percent"),
-            "data": record.get("data") or {},
-            "timestamp": _serialize_datetime(record.get("timestamp")),
-            "task": record.get("task"),
-        })
+        task = record.get("task")
+        task_id = record.get("task_id")
+        agent_id = record.get("agent_id")
+        
+        # Create a unique key for this task-agent combination
+        combination_key = (task_id, agent_id)
+        
+        # Skip if we've already included this combination (prefer responses over progress messages)
+        if combination_key in seen_combinations:
+            continue
+        
+        # Extract the actual agent response from task metadata if available
+        agent_response = None
+        if task and task.get("metadata"):
+            agent_response = task.get("metadata", {}).get("response")
+        
+        # Use the agent response if available, otherwise use the progress message
+        message_text = agent_response if agent_response else record.get("message")
+        
+        # Only include messages that have actual content (skip empty progress updates for completed tasks)
+        # Show progress messages for in-progress tasks, but prefer responses for completed tasks
+        if message_text and (agent_response or not task or task.get("status") != "completed"):
+            messages.append({
+                "id": record.get("id"),
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "message": message_text,
+                "progress_percent": record.get("progress_percent"),
+                "data": record.get("data") or {},
+                "timestamp": _serialize_datetime(record.get("timestamp")),
+                "task": task,
+            })
+            seen_combinations.add(combination_key)
 
     return {
         "messages": messages,

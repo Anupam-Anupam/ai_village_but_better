@@ -1,4 +1,0 @@
-cua-agent
-cua-computer
-cua-som>=0.1.3
-

@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """
 Database checker for AI Village system
-Checks both server and agent databases
+Checks both server and agent databases, and PostgreSQL task storage
 """
 
 import pymongo
 import requests
 import json
+import os
 from datetime import datetime
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+    print("⚠️  psycopg2 not available. Install with: pip install psycopg2-binary")
 
 def check_server_database():
     """Check the server's MongoDB database"""
@@ -117,6 +126,139 @@ def check_mongodb_directly():
         print(f"❌ Error connecting to MongoDB: {e}")
         return False
 
+def check_postgresql_tasks():
+    """Check PostgreSQL database for tasks"""
+    print("\n🐘 CHECKING POSTGRESQL TASK DATABASE")
+    print("=" * 50)
+    
+    if not PSYCOPG2_AVAILABLE:
+        print("❌ psycopg2 not available. Cannot check PostgreSQL.")
+        print("   Install with: pip install psycopg2-binary")
+        return False
+    
+    try:
+        # Try to get connection string from environment or use default
+        postgres_url = os.getenv(
+            "POSTGRES_URL",
+            "postgresql://hub:hubpassword@localhost:5433/hub"
+        )
+        
+        # Parse connection string for psycopg2
+        # Format: postgresql://user:password@host:port/dbname
+        if postgres_url.startswith("postgresql://"):
+            postgres_url = postgres_url.replace("postgresql://", "postgres://", 1)
+        
+        print(f"🔗 Connecting to PostgreSQL...")
+        print(f"   Connection string: {postgres_url.split('@')[0]}@***")
+        
+        conn = psycopg2.connect(postgres_url)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check if tasks table exists
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'tasks'
+            );
+        """)
+        table_exists = cursor.fetchone()['exists']
+        
+        if not table_exists:
+            print("❌ Tasks table does not exist!")
+            print("   The table should be created automatically by the storage adapter.")
+            conn.close()
+            return False
+        
+        print("✅ Tasks table exists")
+        
+        # Get total task count
+        cursor.execute("SELECT COUNT(*) as count FROM tasks")
+        total_tasks = cursor.fetchone()['count']
+        print(f"📊 Total tasks in database: {total_tasks}")
+        
+        # Get tasks by status
+        cursor.execute("""
+            SELECT status, COUNT(*) as count 
+            FROM tasks 
+            GROUP BY status 
+            ORDER BY count DESC
+        """)
+        status_counts = cursor.fetchall()
+        print(f"\n📈 Tasks by status:")
+        for row in status_counts:
+            print(f"   - {row['status']}: {row['count']}")
+        
+        # Get recent tasks
+        cursor.execute("""
+            SELECT id, agent_id, title, status, created_at, updated_at, metadata
+            FROM tasks 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        """)
+        recent_tasks = cursor.fetchall()
+        
+        if recent_tasks:
+            print(f"\n📋 Recent Tasks (last {len(recent_tasks)}):")
+            for i, task in enumerate(recent_tasks, 1):
+                created = task['created_at'].strftime('%Y-%m-%d %H:%M:%S') if task['created_at'] else 'N/A'
+                title = task['title'][:60] + '...' if len(task['title']) > 60 else task['title']
+                print(f"   {i}. [ID: {task['id']}] [{task['status']}] {title}")
+                print(f"      Agent: {task['agent_id']} | Created: {created}")
+                if task['metadata']:
+                    metadata_str = json.dumps(task['metadata'])[:80]
+                    print(f"      Metadata: {metadata_str}...")
+        else:
+            print("\n⚠️  No tasks found in database!")
+            print("   This could mean:")
+            print("   - No tasks have been created yet")
+            print("   - Tasks are being created in a different database")
+            print("   - There's an issue with task creation")
+        
+        # Check task_progress table
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'task_progress'
+            );
+        """)
+        progress_table_exists = cursor.fetchone()['exists']
+        
+        if progress_table_exists:
+            cursor.execute("SELECT COUNT(*) as count FROM task_progress")
+            progress_count = cursor.fetchone()['count']
+            print(f"\n📊 Total progress updates: {progress_count}")
+            
+            if progress_count > 0:
+                cursor.execute("""
+                    SELECT task_id, agent_id, progress_percent, message, timestamp
+                    FROM task_progress 
+                    ORDER BY timestamp DESC 
+                    LIMIT 5
+                """)
+                recent_progress = cursor.fetchall()
+                print(f"\n📈 Recent Progress Updates (last {len(recent_progress)}):")
+                for i, prog in enumerate(recent_progress, 1):
+                    timestamp = prog['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if prog['timestamp'] else 'N/A'
+                    message = prog['message'][:50] + '...' if prog['message'] and len(prog['message']) > 50 else (prog['message'] or 'N/A')
+                    print(f"   {i}. Task {prog['task_id']} [{prog['agent_id']}]: {prog['progress_percent']}% - {message}")
+                    print(f"      Time: {timestamp}")
+        
+        conn.close()
+        return True
+        
+    except psycopg2.OperationalError as e:
+        print(f"❌ Error connecting to PostgreSQL: {e}")
+        print("   Make sure PostgreSQL is running and accessible.")
+        print("   Check: docker-compose ps postgres")
+        return False
+    except Exception as e:
+        print(f"❌ Error checking PostgreSQL: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def main():
     """Main function to check all databases"""
     print("🚀 AI VILLAGE DATABASE CHECKER")
@@ -131,14 +273,27 @@ def main():
     # Check MongoDB directly
     mongo_ok = check_mongodb_directly()
     
+    # Check PostgreSQL tasks
+    postgres_ok = check_postgresql_tasks()
+    
     print("\n" + "=" * 50)
-    if server_ok and mongo_ok:
-        print("✅ Database check completed successfully!")
+    results = []
+    if server_ok:
+        results.append("✅ Server MongoDB")
+    if mongo_ok:
+        results.append("✅ MongoDB Direct")
+    if postgres_ok:
+        results.append("✅ PostgreSQL Tasks")
+    
+    if results:
+        print("✅ Database check completed!")
+        print("\n".join(results))
     else:
         print("⚠️  Some database connections failed. Check if Docker containers are running.")
     
     print("\n💡 To start the system: docker-compose up -d")
     print("💡 To send a test message: python send_message.py 'Hello agents!'")
+    print("💡 To create a task: curl -X POST http://localhost:8000/task -H 'Content-Type: application/json' -d '{\"text\": \"Your task here\"}'")
 
 if __name__ == "__main__":
     main()

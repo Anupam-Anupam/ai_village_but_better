@@ -3,28 +3,91 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Any
 
 
-def is_agent_response(filename: str, data: Dict) -> bool:
-    name = filename.lower()
-    if "agent_response" in name or "agent-response" in name:
-        return True
-    # Heuristic: messages from agent/assistant
-    if isinstance(data, dict):
-        # CUA logs often have a list under "output" with type/message
-        output = data.get("output")
+def _validate_agent_response_schema(data: Dict[str, Any]) -> bool:
+    """Validate that data matches expected agent response schema."""
+    if not isinstance(data, dict):
+        return False
+    
+    # Schema 1: response.output structure
+    if "response" in data:
+        response = data["response"]
+        if isinstance(response, dict) and "output" in response:
+            output = response["output"]
+            if isinstance(output, list):
+                for item in output:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        content = item.get("content", [])
+                        if isinstance(content, list) and content:
+                            return True
+    
+    # Schema 2: direct output structure
+    if "output" in data:
+        output = data["output"]
         if isinstance(output, list):
             for item in output:
                 if isinstance(item, dict) and item.get("type") == "message":
                     content = item.get("content", [])
-                    if content:
+                    if isinstance(content, list) and content:
                         return True
-        # Lite logs may contain role-based messages
-        role = data.get("role")
-        if role == "assistant":
-            return True
+    
+    # Schema 3: role-based messages
+    if "role" in data and data.get("role") == "assistant":
+        return True
+    
     return False
+
+
+def is_agent_response(filename: str, data: Dict) -> bool:
+    """Check if a file is an agent response with schema validation."""
+    if not isinstance(filename, str) or not isinstance(data, dict):
+        return False
+    
+    name = filename.lower()
+    if "agent_response" in name or "agent-response" in name:
+        return True
+    
+    return _validate_agent_response_schema(data)
+
+
+def extract_agent_response_text(data: Dict[str, Any]) -> Optional[str]:
+    """Extract text content from an agent response JSON with schema validation."""
+    if not isinstance(data, dict):
+        return None
+    
+    # Schema 1: response.output structure
+    if "response" in data:
+        response = data["response"]
+        if isinstance(response, dict) and "output" in response:
+            output = response["output"]
+            if isinstance(output, list):
+                for item in output:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        content = item.get("content", [])
+                        if isinstance(content, list):
+                            for content_item in content:
+                                if isinstance(content_item, dict) and content_item.get("type") == "output_text":
+                                    text = content_item.get("text")
+                                    if isinstance(text, str) and text:
+                                        return text
+    
+    # Schema 2: direct output structure
+    if "output" in data:
+        output = data["output"]
+        if isinstance(output, list):
+            for item in output:
+                if isinstance(item, dict) and item.get("type") == "message":
+                    content = item.get("content", [])
+                    if isinstance(content, list):
+                        for content_item in content:
+                            if isinstance(content_item, dict) and content_item.get("type") == "output_text":
+                                text = content_item.get("text")
+                                if isinstance(text, str) and text:
+                                    return text
+    
+    return None
 
 
 def is_screenshot_like(filename: str, data: Dict) -> bool:

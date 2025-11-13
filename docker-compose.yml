@@ -70,63 +70,12 @@ services:
     depends_on:
       - postgres
       - mongodb
-      - agent1
-      - agent2
-      - agent3
+      - agent1_worker
+      - agent2_worker
+      - agent3_worker
 
-  # Agent 1 - connects to shared MongoDB with different database name
-  agent1:
-    build:
-      context: .
-      dockerfile: agents/agent_sandbox/Dockerfile
-    ports:
-      - "8001:8001"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AGENT_ID=1
-      - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent1db?authSource=admin
-    networks:
-      - ai-village-network
-    depends_on:
-      - mongodb
-
-  # Agent 2 - connects to shared MongoDB with different database name
-  agent2:
-    build:
-      context: .
-      dockerfile: agents/agent_sandbox/Dockerfile
-    ports:
-      - "8002:8001"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AGENT_ID=2
-      - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent2db?authSource=admin
-    networks:
-      - ai-village-network
-    depends_on:
-      - mongodb
-
-  # Agent 3 - connects to shared MongoDB with different database name
-  agent3:
-    build:
-      context: .
-      dockerfile: agents/agent_sandbox/Dockerfile
-    ports:
-      - "8003:8001"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AGENT_ID=3
-      - HUB_URL=http://server:8000
-      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent3db?authSource=admin
-    networks:
-      - ai-village-network
-    depends_on:
-      - mongodb
-
-  # Agent Worker - polls PostgreSQL for tasks and executes them
-  agent_worker:
+  # Agent 1 Worker - polls PostgreSQL for tasks and executes them
+  agent1_worker:
     build:
       context: .
       dockerfile: agents/agent1/agent_worker/Dockerfile
@@ -138,6 +87,58 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_SECURE=false
       - AGENT_ID=agent1
+      - POLL_INTERVAL_SECONDS=5
+      - RUN_TASK_TIMEOUT_SECONDS=300
+      - CUA_API_KEY=${CUA_API_KEY}
+      - CUA_SANDBOX_NAME=${CUA_SANDBOX_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+    depends_on:
+      - postgres
+      - mongodb
+      - minio
+    restart: unless-stopped
+
+  # Agent 2 Worker - polls PostgreSQL for tasks and executes them
+  agent2_worker:
+    build:
+      context: .
+      dockerfile: agents/agent2/agent_worker/Dockerfile
+    environment:
+      - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      - AGENT_ID=agent2
+      - POLL_INTERVAL_SECONDS=5
+      - RUN_TASK_TIMEOUT_SECONDS=300
+      - CUA_API_KEY=${CUA_API_KEY}
+      - CUA_SANDBOX_NAME=${CUA_SANDBOX_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - ai-village-network
+    depends_on:
+      - postgres
+      - mongodb
+      - minio
+    restart: unless-stopped
+
+  # Agent 3 Worker - polls PostgreSQL for tasks and executes them
+  agent3_worker:
+    build:
+      context: .
+      dockerfile: agents/agent3/agent_worker/Dockerfile
+    environment:
+      - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      - AGENT_ID=agent3
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
       - CUA_API_KEY=${CUA_API_KEY}
