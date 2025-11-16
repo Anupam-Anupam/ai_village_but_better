@@ -7,27 +7,15 @@ import time
 import threading
 import shutil
 from pathlib import Path
-from typing import Optional, Set, List
+from typing import Optional
 from datetime import datetime
 from uuid import uuid4
 
 from .config import Config
 from .db_adapters import PostgresClient, MongoClientWrapper
-from .storage import MinioClientWrapper
 
 
-def list_new_screenshots(before: Set[str], after: Set[str]) -> List[str]:
-    """
-    Helper function to detect newly created screenshot files.
-    
-    Args:
-        before: Set of filenames before task execution
-        after: Set of filenames after task execution
-        
-    Returns:
-        List of new filenames
-    """
-    return list(after - before)
+# Removed: list_new_screenshots - CUA trajectory processor handles screenshots
 
 
 class AgentRunner:
@@ -37,8 +25,7 @@ class AgentRunner:
         self,
         config: Config,
         postgres_client: PostgresClient,
-        mongo_client: MongoClientWrapper,
-        minio_client: MinioClientWrapper
+        mongo_client: MongoClientWrapper
     ):
         """
         Initialize agent runner.
@@ -47,12 +34,10 @@ class AgentRunner:
             config: Configuration object
             postgres_client: PostgreSQL client
             mongo_client: MongoDB client
-            minio_client: MinIO client
         """
         self.config = config
         self.postgres = postgres_client
         self.mongo = mongo_client
-        self.minio = minio_client
         self.running = False
         self.current_workdir: Optional[str] = None
     
@@ -149,11 +134,6 @@ class AgentRunner:
                 message="Task started"
             )
             
-            # Snapshot existing files in screenshots directory
-            screenshots_before = set()
-            if screenshots_dir.exists():
-                screenshots_before = {f.name for f in screenshots_dir.iterdir() if f.is_file()}
-            
             # Start heartbeat thread for progress updates
             heartbeat_stop = threading.Event()
             heartbeat_thread = threading.Thread(
@@ -232,70 +212,14 @@ class AgentRunner:
                         meta={"stderr": stderr}
                     )
                 
-                # Detect newly created screenshots
-                screenshots_after = set()
-                if screenshots_dir.exists():
-                    screenshots_after = {f.name for f in screenshots_dir.iterdir() if f.is_file()}
-                
-                new_screenshots = list_new_screenshots(screenshots_before, screenshots_after)
-                
-                # Upload new screenshots
-                uploaded_paths = []
-                for filename in new_screenshots:
-                    try:
-                        screenshot_path = screenshots_dir / filename
-                        
-                        # Check if file exists and has content
-                        if not screenshot_path.exists():
-                            print(f"[{self.config.agent_id}] WARNING: Screenshot file not found: {screenshot_path}")
-                            continue
-                        
-                        file_size = screenshot_path.stat().st_size
-                        if file_size == 0:
-                            print(f"[{self.config.agent_id}] WARNING: Screenshot file is empty: {screenshot_path}")
-                            continue
-                        
-                        print(f"[{self.config.agent_id}] Uploading screenshot: {filename} ({file_size} bytes)")
-                        object_path = self.minio.upload_file(str(screenshot_path))
-                        uploaded_paths.append(object_path)
-                        
-                        # Verify upload by checking if object exists in MinIO
-                        try:
-                            # Try to stat the object to verify it exists
-                            from minio import Minio
-                            minio_client = self.minio.client
-                            stat = minio_client.stat_object("screenshots", object_path)
-                            print(f"[{self.config.agent_id}] Verified screenshot in MinIO: {object_path} ({stat.size} bytes)")
-                        except Exception as verify_error:
-                            print(f"[{self.config.agent_id}] WARNING: Could not verify screenshot in MinIO: {verify_error}")
-                        
-                        # Log upload
-                        self.mongo.write_log(
-                            task_id=task_id,
-                            level="info",
-                            message=f"Screenshot uploaded: {object_path}",
-                            meta={"filename": filename, "object_path": object_path, "file_size": file_size}
-                        )
-                        print(f"[{self.config.agent_id}] Uploaded screenshot: {object_path}")
-                        
-                        # Insert progress update for upload
-                        self.postgres.insert_progress(
-                            task_id=task_id,
-                            agent_id=self.config.agent_id,
-                            percent=None,
-                            message=f"uploaded screenshot: {object_path}"
-                        )
-                    except Exception as e:
-                        error_msg = f"Failed to upload screenshot {filename}: {str(e)}"
-                        print(f"[{self.config.agent_id}] ERROR: {error_msg}")
-                        import traceback
-                        traceback.print_exc()
-                        self.mongo.write_log(
-                            task_id=task_id,
-                            level="error",
-                            message=error_msg,
-                            meta={"filename": filename, "exc_info": str(e)}
-                        )
+                # Screenshots are handled by CUA trajectory processor
+                # Count screenshots from MongoDB for progress reporting
+                screenshot_count = 0
+                try:
+                    screenshots = self.mongo.get_screenshots(task_id=task_id, limit=100)
+                    screenshot_count = len(screenshots) if screenshots else 0
+                except:
+                    pass
                 
                 # Determine final progress percent
                 # If return_code is 0, set to 100; otherwise use heuristics
@@ -303,14 +227,14 @@ class AgentRunner:
                     final_percent = 100
                 else:
                     # Heuristic: if we uploaded screenshots, consider it partial success
-                    final_percent = 50 if uploaded_paths else 0
+                    final_percent = 50 if screenshot_count > 0 else 0
                 
                 # Insert final progress
                 self.postgres.insert_progress(
                     task_id=task_id,
                     agent_id=self.config.agent_id,
                     percent=final_percent,
-                    message=f"completed (return_code={return_code}, screenshots={len(uploaded_paths)})"
+                    message=f"completed (return_code={return_code}, screenshots={screenshot_count})"
                 )
                 
                 # Update task response
@@ -344,14 +268,14 @@ class AgentRunner:
                 
                 # Final fallback: use summary if stdout is empty
                 if not response_text:
-                    response_text = f"Task completed (return_code={return_code}, duration={duration:.2f}s, screenshots={len(uploaded_paths)})"
+                    response_text = f"Task completed (return_code={return_code}, duration={duration:.2f}s, screenshots={screenshot_count})"
                 
                 # Update task status to completed
                 try:
                     self.postgres.update_task_status(
                         task_id=task_id,
                         status="completed" if return_code == 0 else "failed",
-                        metadata={"completed_at": datetime.utcnow().isoformat(), "return_code": return_code, "screenshots": len(uploaded_paths)}
+                        metadata={"completed_at": datetime.utcnow().isoformat(), "return_code": return_code, "screenshots": screenshot_count}
                     )
                 except Exception as e:
                     print(f"[{self.config.agent_id}] Warning: Failed to update task status: {e}")
