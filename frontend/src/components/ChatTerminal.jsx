@@ -35,8 +35,10 @@ const buildAgentMessage = (record) => {
 
   const timestamp = ensureDate(record.timestamp);
   const progressPercent = normalizePercent(record.progress_percent);
-  const text = (record.message && record.message.trim().length > 0)
-    ? record.message
+  // Ensure message is a string before calling trim
+  const messageStr = record.message ? String(record.message) : '';
+  const text = (messageStr && messageStr.trim().length > 0)
+    ? messageStr
     : (progressPercent !== null
       ? `Progress update: ${progressPercent.toFixed(0)}% complete.`
       : 'Progress update received.');
@@ -122,11 +124,11 @@ const ChatTerminal = () => {
       }
       setHistoryError(null);
     } catch (error) {
-      if (abortRef.current) {
-        return;
-      }
-      console.error('Error loading agent responses:', error);
-      setHistoryError(error.message || 'Unable to load agent responses');
+        if (abortRef.current) {
+          return;
+        }
+        console.error('Error loading agent responses:', error);
+        setHistoryError(error?.message ? String(error.message) : 'Unable to load agent responses');
     } finally {
       if (!abortRef.current) {
         setHistoryLoading(false);
@@ -207,7 +209,7 @@ const ChatTerminal = () => {
       const errorMessage = {
         id: `error-${Date.now()}`,
         sender: 'system',
-        text: `Error: ${error.message}`,
+        text: `Error: ${error?.message ? String(error.message) : String(error)}`,
         timestamp: new Date(),
         isError: true,
       };
@@ -305,7 +307,7 @@ const ChatTerminal = () => {
                 gap: '10px',
                 alignItems: 'center'
               }}>
-                <span>{message.text}</span>
+                <span>{message.text ? String(message.text) : ''}</span>
                 {message.isThinking && (
                   <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '8px' }}>
                     <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
