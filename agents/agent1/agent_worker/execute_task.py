@@ -464,9 +464,9 @@ def main():
     print("EXECUTION RESULT")
     print("=" * 60)
     print(f"Status: {result['status']}")
-    if result['output']:
+    if result.get('output'):
         print(f"Output:\n{result['output']}")
-    if result['error']:
+    if result.get('error'):
         print(f"Error: {result['error']}")
     
     # Output the response in a structured format that can be easily extracted

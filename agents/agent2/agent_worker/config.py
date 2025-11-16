@@ -16,12 +16,6 @@ class Config:
     # MongoDB
     mongo_uri: str
     
-    # MinIO
-    minio_endpoint: str
-    minio_access_key: str
-    minio_secret_key: str
-    minio_secure: bool
-    
     # Agent
     agent_id: str
     
@@ -42,23 +36,6 @@ class Config:
         if not mongo_uri:
             raise ValueError("MONGODB_URL or MONGO_URI environment variable is required")
         
-        # MinIO
-        minio_endpoint = os.getenv("MINIO_ENDPOINT")
-        if not minio_endpoint:
-            raise ValueError("MINIO_ENDPOINT environment variable is required")
-        
-        minio_access_key = os.getenv("MINIO_ACCESS_KEY")
-        if not minio_access_key:
-            raise ValueError("MINIO_ACCESS_KEY environment variable is required")
-        
-        minio_secret_key = os.getenv("MINIO_SECRET_KEY")
-        if not minio_secret_key:
-            raise ValueError("MINIO_SECRET_KEY environment variable is required")
-        
-        # MinIO secure mode (default: False)
-        minio_secure_str = os.getenv("MINIO_SECURE", "false").lower()
-        minio_secure = minio_secure_str in ("true", "1", "yes")
-        
         # Agent ID
         agent_id = os.getenv("AGENT_ID")
         if not agent_id:
@@ -71,10 +48,6 @@ class Config:
         return cls(
             postgres_dsn=postgres_dsn,
             mongo_uri=mongo_uri,
-            minio_endpoint=minio_endpoint,
-            minio_access_key=minio_access_key,
-            minio_secret_key=minio_secret_key,
-            minio_secure=minio_secure,
             agent_id=agent_id,
             poll_interval_seconds=poll_interval_seconds,
             run_task_timeout_seconds=run_task_timeout_seconds

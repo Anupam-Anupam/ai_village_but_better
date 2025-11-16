@@ -45,9 +45,6 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY agents/agent1/agent_worker/requirements-base.txt /app/requirements-base.txt
 RUN pip install --no-cache-dir -r /app/requirements-base.txt
 
-# Install Playwright browsers (required for screenshot functionality)
-RUN playwright install chromium && playwright install-deps chromium
-
 # Install CUA packages separately with longer timeout
 # These packages are large and may take time to download/install
 

@@ -1,8 +1,9 @@
 psycopg2-binary>=2.9.0
 pymongo>=4.0.0
-minio>=7.0.0
 python-dotenv>=1.0.0
-playwright>=1.40.0
+watchdog>=3.0.0
 cua-agent
 cua-computer
 cua-som>=0.1.3
+
+

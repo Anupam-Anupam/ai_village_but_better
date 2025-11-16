@@ -34,26 +34,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # MinIO object storage for screenshots and binary files
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"  # MinIO API
-      - "9001:9001"  # MinIO Console
-    volumes:
-      - minio_data:/data
-    networks:
-      - ai-village-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
   # Main server container
   server:
     build:
@@ -82,10 +62,6 @@ services:
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
       - AGENT_ID=agent1
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
@@ -97,7 +73,6 @@ services:
     depends_on:
       - postgres
       - mongodb
-      - minio
     restart: unless-stopped
 
   # Agent 2 Worker - polls PostgreSQL for tasks and executes them
@@ -108,10 +83,6 @@ services:
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
       - AGENT_ID=agent2
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
@@ -123,7 +94,6 @@ services:
     depends_on:
       - postgres
       - mongodb
-      - minio
     restart: unless-stopped
 
   # Agent 3 Worker - polls PostgreSQL for tasks and executes them
@@ -134,10 +104,6 @@ services:
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_SECURE=false
       - AGENT_ID=agent3
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
@@ -149,7 +115,6 @@ services:
     depends_on:
       - postgres
       - mongodb
-      - minio
     restart: unless-stopped
 
 networks:
@@ -159,4 +124,3 @@ networks:
 volumes:
   mongodb_data:
   postgres_data:
-  minio_data:

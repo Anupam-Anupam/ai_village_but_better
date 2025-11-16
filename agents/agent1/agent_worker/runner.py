@@ -11,8 +11,12 @@ from typing import Optional
 from datetime import datetime
 from uuid import uuid4
 
-from .config import Config
-from .db_adapters import PostgresClient, MongoClientWrapper
+try:
+    from .config import Config
+    from .db_adapters import PostgresClient, MongoClientWrapper
+except ImportError:
+    from config import Config
+    from db_adapters import PostgresClient, MongoClientWrapper
 
 
 # Removed: list_new_screenshots - CUA trajectory processor handles screenshots
@@ -159,9 +163,14 @@ class AgentRunner:
             
             start_time = time.time()
             try:
-                # Pass task description as environment variable or argument
+                # Pass task description and MongoDB connection info as environment variables
                 env = os.environ.copy()
                 env["TASK_DESCRIPTION"] = task_description
+                env["TASK_ID"] = str(task_id)
+                env["MONGO_URI"] = self.config.mongo_uri
+                env["AGENT_ID"] = self.config.agent_id
+                env["WORKDIR"] = str(workdir_path)
+                print(f"[{self.config.agent_id}] Executing task {task_id} with env: TASK_ID={task_id}, WORKDIR={workdir_path}")
                 
                 result = subprocess.run(
                     ["python", str(execute_task_script), task_description],

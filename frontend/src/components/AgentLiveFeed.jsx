@@ -24,7 +24,6 @@ const AgentLiveFeed = () => {
   const [generatedAt, setGeneratedAt] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [minioAvailable, setMinioAvailable] = useState(true);
 
   useEffect(() => {
     let ignore = false;
@@ -42,7 +41,6 @@ const AgentLiveFeed = () => {
         if (!ignore) {
           setAgents(Array.isArray(data.agents) ? data.agents : []);
           setGeneratedAt(data.generated_at || null);
-          setMinioAvailable(Boolean(data.minio_available));
           setError(null);
           setIsLoading(false);
         }
@@ -98,9 +96,7 @@ const AgentLiveFeed = () => {
               />
             ) : (
               <div className="agent-card__placeholder">
-                {minioAvailable
-                  ? 'No screenshot available yet'
-                  : 'Screenshot storage unavailable'}
+                No screenshot available yet
               </div>
             )}
           </div>
@@ -133,7 +129,7 @@ const AgentLiveFeed = () => {
         </article>
       );
     });
-  }, [agents, minioAvailable]);
+  }, [agents]);
 
   return (
     <section className="live-feed">
@@ -144,9 +140,6 @@ const AgentLiveFeed = () => {
         </div>
         <div className="live-feed__meta">
           <span>Last refreshed: {generatedAt ? formatTime(generatedAt) : '—'}</span>
-          {!minioAvailable && (
-            <span className="live-feed__warning">Screenshot storage offline</span>
-          )}
         </div>
       </header>
 
